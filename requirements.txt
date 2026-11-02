@@ -1,0 +1,22 @@
+# Everything here is bundled INTO the app by PyInstaller (build/multitool.spec).
+# End users never install any of it. When you add a package, also add it to
+# BUNDLED_PACKAGES in build/multitool.spec so plugins can import it.
+
+# ── Core shell ──────────────────────────────────────────────────────────
+customtkinter>=5.2.2
+tkinterdnd2>=0.4.2
+Pillow>=11.0          # thumbnails now; screenshots/textures later
+
+# ── Build tooling ───────────────────────────────────────────────────────
+pyinstaller>=6.10
+
+# ── Upcoming plugin dependencies (uncomment as each module is built) ────
+# mss                 # Module 2: fast screen capture
+# PyAudioWPatch       # Modules 2/3: WASAPI loopback (desktop audio) on Windows
+# numpy               # Modules 2/3: frame/audio buffers
+# faster-whisper      # Module 3: local Whisper (CTranslate2, no PyTorch needed)
+# watchdog            # Module 5: file-system watcher
+# requests            # Module 5: Roblox Open Cloud API
+# pytesseract         # Module 8: wrapper around bin/tesseract/tesseract.exe
+# pynput              # Modules 2/7/8: global hotkeys
+# pywin32             # Module 9: native clipboard listener
