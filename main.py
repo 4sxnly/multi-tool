@@ -9,7 +9,8 @@ Folder layout (next to main.py in dev, next to MultiTool.exe when built):
 
     plugins/            one .py file per tool, or a folder with __init__.py
     bin/                bundled engines: ffmpeg.exe, ffprobe.exe (+ their DLLs),
-                        yt-dlp.exe, deno.exe, tesseract/tesseract.exe (+ tessdata/)
+                        yt-dlp.exe, deno.exe, llama-cpu/ + llama-vulkan/ (llama-server.exe),
+                        tesseract/tesseract.exe (+ tessdata/)
     assets/icon.ico     optional window icon
     data/               settings, logs, themes, per-plugin data (dev/portable mode)
 
@@ -55,6 +56,20 @@ PluginContext gives each plugin:
     ctx.run_in_thread(fn, *args, on_done=..., on_error=...)
     ctx.get_setting(key, default) / ctx.set_setting(key, value)
     ctx.copy_to_clipboard(text), ctx.set_status(text, level), ctx.open_path(path)
+    ctx.register_file_type(".ext", "Label", handler)   -> Settings ▸ Install… accepts that file type
+
+THEME PACKS (.mttheme)
+----------------------
+A theme is a single .mttheme file — plain JSON, or a zip containing theme.json plus an
+optional banner image. Install by dropping it on Settings or via Settings ▸ Install theme….
+    {
+      "name": "My Theme", "author": "me", "version": "1.0", "description": "…",
+      "extends": "Default Dark",                 # unspecified colours come from here
+      "colors":  { "bg": "#000000", "accent": "#ffcc00", "radius": 0, "title_font": "Bahnschrift", … },
+      "effects": { "uppercase_titles": true, "title_prefix": "// ", "glitch_titles": true, … },
+      "banner":  "banner.png"                    # zip packs only
+    }
+Colour keys: see BUILTIN_THEMES. Effect keys: see EFFECT_DEFAULTS.
 
 THEME ROLES (set with ctx.theme.tag(widget, role)):
     frames:  "transparent" | "surface" | "sidebar" | "card" | "entry" | "divider"
@@ -73,12 +88,14 @@ import ctypes
 import importlib
 import importlib.util
 import inspect
+import io
 import json
 import logging
 import logging.handlers
 import multiprocessing
 import os
 import queue
+import random
 import re
 import shutil
 import subprocess
@@ -123,7 +140,7 @@ _CTkCanvas = getattr(ctk, "CTkCanvas", None)
 
 APP_NAME = "Multi-Tool"          # placeholder product name — change in one place
 APP_ID = "MultiTool"             # filesystem / mutex safe id
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 PLUGIN_API_VERSION = 1
 PLUGIN_NAMESPACE = "multitool_plugins"
 
@@ -140,6 +157,8 @@ KNOWN_ENGINES: list[tuple[str, str]] = [
     ("ffprobe", "Media Downloader, Audio Extractor"),
     ("yt-dlp", "Media Downloader"),
     ("deno", "Media Downloader (YouTube challenge solving)"),
+    ("llama-vulkan/llama-server", "Desktop Companion offline AI (graphics card)"),
+    ("llama-cpu/llama-server", "Desktop Companion offline AI (processor)"),
     ("tesseract", "Optics OCR"),
 ]
 
@@ -250,24 +269,138 @@ LABEL_ROLE_COLORS = {
 }
 
 
-def load_user_themes(themes_dir: Path, log: logging.Logger) -> dict[str, dict[str, Any]]:
-    """Load data/themes/*.json. Keys override a base theme (`"extends"`, default Default Dark)."""
-    out: dict[str, dict[str, Any]] = {}
-    for file in sorted(themes_dir.glob("*.json")):
+THEME_EXTENSIONS = (".mttheme", ".json")
+HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+FONT_KEYS = {"font", "title_font", "mono_font"}
+
+# Optional shell decorations a theme pack can switch on ("effects" in theme.json)
+EFFECT_DEFAULTS: dict[str, Any] = {
+    "uppercase_titles": False,   # page titles in CAPS
+    "uppercase_nav": False,      # sidebar entries in CAPS
+    "title_prefix": "",          # e.g. "// "
+    "nav_active_prefix": "",     # e.g. "▶ " in front of the selected tool
+    "status_prefix": "",         # e.g. "> " in the status bar
+    "brand_tagline": "",         # replaces "Desktop Utility Belt" under the logo
+    "glitch_titles": False,      # page title briefly scrambles every few seconds
+    "glitch_colors": [],         # colours used while glitching (default: accent2 + danger)
+    "divider_height": 1,         # thickness of the header / sidebar dividers
+    "divider_color": "border",   # palette key for those dividers
+    "sidebar_stripe": 0,         # width of a coloured stripe between sidebar and content
+    "sidebar_stripe_color": "accent",
+}
+
+
+@dataclass
+class ThemeInfo:
+    name: str
+    palette: dict[str, Any]
+    effects: dict[str, Any]
+    author: str = ""
+    description: str = ""
+    version: str = ""
+    source: Path | None = None   # None = built into the app (cannot be removed)
+    banner: str | None = None    # image inside a zipped .mttheme, shown instead of the app name
+
+    @property
+    def builtin(self) -> bool:
+        return self.source is None
+
+
+BUILTIN_THEME_INFO: dict[str, dict[str, Any]] = {
+    "Default Dark": {"description": "Clean slate greys. The default — always available.", "effects": {}},
+    "Cyberpunk Neon": {"description": "Near-black canvas, neon cyan lines, hot magenta accents.",
+                       "effects": {"nav_active_prefix": "› ", "status_prefix": "> "}},
+}
+
+
+def _merge_effects(raw: Any, warnings: list[str]) -> dict[str, Any]:
+    effects = dict(EFFECT_DEFAULTS)
+    if not isinstance(raw, dict):
+        return effects
+    for key, value in raw.items():
+        default = EFFECT_DEFAULTS.get(key)
+        if key not in EFFECT_DEFAULTS:
+            warnings.append(f"unknown effect {key!r}")
+        elif isinstance(default, bool):
+            effects[key] = bool(value)
+        elif isinstance(default, int) and isinstance(value, (int, float)) and not isinstance(value, bool):
+            effects[key] = max(0, min(int(value), 12))
+        elif isinstance(default, list) and isinstance(value, list):
+            effects[key] = [v for v in value if isinstance(v, str) and HEX_COLOR_RE.match(v)]
+        elif isinstance(default, str) and isinstance(value, str):
+            effects[key] = value[:40]
+        else:
+            warnings.append(f"invalid effect {key!r}")
+    return effects
+
+
+def builtin_theme_infos() -> dict[str, ThemeInfo]:
+    out = {}
+    for name, palette in BUILTIN_THEMES.items():
+        meta = BUILTIN_THEME_INFO.get(name, {})
+        out[name] = ThemeInfo(name=name, palette=dict(palette), effects=_merge_effects(meta.get("effects"), []),
+                              author="Built in", description=meta.get("description", ""))
+    return out
+
+
+def read_theme_pack(path: Path) -> tuple[ThemeInfo, list[str]]:
+    """A theme pack is a .mttheme file: plain JSON, or a zip holding theme.json (+ banner image).
+    Plain .json files in the themes folder are read the same way."""
+    warnings: list[str] = []
+    banner_member = None
+    if zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as zf:
+            names = zf.namelist()
+            member = next((n for n in names if n.rsplit("/", 1)[-1].lower() == "theme.json"), None)
+            if member is None:
+                raise ValueError("the pack has no theme.json inside")
+            raw = json.loads(zf.read(member).decode("utf-8-sig"))
+            prefix = member[: -len("theme.json")]
+            banner = raw.get("banner") if isinstance(raw, dict) else None
+            if isinstance(banner, str) and (prefix + banner) in names:
+                banner_member = prefix + banner
+            elif banner:
+                warnings.append(f"banner {banner!r} not found in pack")
+    else:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(raw, dict):
+        raise ValueError("theme must be a JSON object")
+    name = str(raw.get("name") or path.stem).strip()[:60] or path.stem
+    base = BUILTIN_THEMES.get(str(raw.get("extends", DEFAULT_THEME)), BUILTIN_THEMES[DEFAULT_THEME])
+    palette = dict(base)
+    colors = raw.get("colors")
+    if not isinstance(colors, dict):  # older flat format: colour keys at top level
+        colors = {k: v for k, v in raw.items() if k in palette}
+    for key, value in colors.items():
+        if key not in palette:
+            warnings.append(f"unknown colour key {key!r}")
+        elif key in FONT_KEYS and isinstance(value, str) and value.strip():
+            palette[key] = value.strip()
+        elif isinstance(palette[key], int) and isinstance(value, (int, float)) and not isinstance(value, bool):
+            palette[key] = max(0, min(int(value), 24))
+        elif isinstance(palette[key], str) and isinstance(value, str) and HEX_COLOR_RE.match(value):
+            palette[key] = value
+        else:
+            warnings.append(f"invalid value for {key!r}")
+    info = ThemeInfo(name=name, palette=palette, effects=_merge_effects(raw.get("effects"), warnings),
+                     author=str(raw.get("author", ""))[:60], description=str(raw.get("description", ""))[:200],
+                     version=str(raw.get("version", ""))[:20], source=path, banner=banner_member)
+    return info, warnings
+
+
+def load_theme_packs(themes_dir: Path, log: logging.Logger) -> dict[str, ThemeInfo]:
+    out: dict[str, ThemeInfo] = {}
+    for file in sorted(themes_dir.iterdir(), key=lambda f: f.name.lower()) if themes_dir.is_dir() else []:
+        if file.suffix.lower() not in THEME_EXTENSIONS or not file.is_file():
+            continue
         try:
-            raw = json.loads(file.read_text(encoding="utf-8"))
-            if not isinstance(raw, dict):
-                raise ValueError("theme file must contain a JSON object")
-            name = str(raw.pop("name", file.stem)).strip() or file.stem
-            base = BUILTIN_THEMES.get(str(raw.pop("extends", DEFAULT_THEME)), BUILTIN_THEMES[DEFAULT_THEME])
-            palette = dict(base)
-            for key, value in raw.items():
-                if key in palette and isinstance(value, type(palette[key])):
-                    palette[key] = value
-                else:
-                    log.warning("Theme %s: ignored unknown/invalid key %r", file.name, key)
-            out[name] = palette
-            log.info("Loaded custom theme %r from %s", name, file.name)
+            info, warnings = read_theme_pack(file)
+            if info.name in BUILTIN_THEMES or info.name in out:
+                info.name = f"{info.name} ({file.stem})"
+            for w in warnings:
+                log.warning("Theme %s: %s", file.name, w)
+            out[info.name] = info
+            log.info("Loaded theme pack %r from %s", info.name, file.name)
         except Exception as exc:
             log.warning("Skipping theme file %s: %s", file, exc)
     return out
@@ -590,16 +723,81 @@ class ThemeManager:
     """Walks the live widget tree and restyles it from the active palette.
     Runs on every theme switch and on every newly mounted plugin page."""
 
-    def __init__(self, root: tk.Misc, settings: SettingsStore, themes: dict[str, dict[str, Any]],
-                 log: logging.Logger):
+    def __init__(self, root: tk.Misc, settings: SettingsStore, themes_dir: Path, log: logging.Logger):
         self._root = root
         self._settings = settings
-        self.themes = themes
+        self.themes_dir = themes_dir
         self.log = log
-        saved = settings.get("core", "theme", DEFAULT_THEME)
-        self.name = saved if saved in themes else DEFAULT_THEME
+        self.infos: dict[str, ThemeInfo] = {}
+        self.themes: dict[str, dict[str, Any]] = {}
+        self.name = DEFAULT_THEME
         self._listeners: list[tuple[str, Callable[[dict[str, Any]], None]]] = []
         self._fonts: dict[tuple, ctk.CTkFont] = {}
+        self._banners: dict[str, Any] = {}
+        self.reload()
+        saved = settings.get("core", "theme", DEFAULT_THEME)
+        self.name = saved if saved in self.themes else DEFAULT_THEME
+
+    # ── theme packs ───────────────────────────────────────────────────────
+    def reload(self) -> None:
+        """Re-scan the themes folder (built-in themes always come first)."""
+        self.infos = builtin_theme_infos()
+        self.infos.update(load_theme_packs(self.themes_dir, self.log))
+        self.themes = {name: info.palette for name, info in self.infos.items()}
+        self._banners.clear()
+        if self.name not in self.themes:
+            self.name = DEFAULT_THEME
+
+    def info(self, name: str | None = None) -> ThemeInfo:
+        return self.infos[name or self.name]
+
+    def install(self, src: Path) -> str:
+        """Validate and copy a .mttheme into the themes folder. Returns the installed theme's name."""
+        info, _warnings = read_theme_pack(src)  # raises if the pack is broken
+        slug = re.sub(r"[^\w\-]+", "-", info.name).strip("-").lower() or "theme"
+        dest = self.themes_dir / f"{slug}{src.suffix.lower()}"
+        for existing in self.infos.values():  # replacing an older copy of the same theme
+            if existing.source and existing.name == info.name and existing.source != dest:
+                existing.source.unlink(missing_ok=True)
+        if src.resolve() != dest.resolve():
+            shutil.copy2(src, dest)
+        self.reload()
+        installed = next((n for n, i in self.infos.items() if i.source and i.source.resolve() == dest.resolve()),
+                         info.name)
+        self.log.info("Installed theme %r -> %s", installed, dest.name)
+        return installed
+
+    def remove(self, name: str) -> None:
+        info = self.infos.get(name)
+        if info is None or info.builtin:
+            raise ValueError("built-in themes can't be removed")
+        info.source.unlink(missing_ok=True)
+        was_active = name == self.name
+        self.reload()
+        if was_active:
+            self.set_theme(DEFAULT_THEME)
+
+    @property
+    def effects(self) -> dict[str, Any]:
+        return self.infos[self.name].effects
+
+    def banner_image(self, name: str | None = None) -> Any:
+        """PIL image of a theme's banner, or None."""
+        name = name or self.name
+        if name in self._banners:
+            return self._banners[name]
+        image = None
+        info = self.infos.get(name)
+        if info and info.banner and info.source:
+            try:
+                from PIL import Image
+                with zipfile.ZipFile(info.source) as zf:
+                    image = Image.open(io.BytesIO(zf.read(info.banner)))
+                    image.load()
+            except Exception as exc:
+                self.log.warning("Theme %s: banner unreadable: %s", name, exc)
+        self._banners[name] = image
+        return image
 
     # ── public API ────────────────────────────────────────────────────────
     @property
@@ -1170,6 +1368,11 @@ class PluginContext:
     def copy_to_clipboard(self, text: str) -> None:
         self._app.copy_to_clipboard(text)
 
+    def register_file_type(self, extension: str, label: str, handler: Callable[[Path], Any]) -> None:
+        """Let Settings ▸ Install… (and drops on the Settings page) accept a file type for this plugin,
+        e.g. ctx.register_file_type(".mtchar", "Companion characters", self.import_character)."""
+        self._app.register_file_type(extension, label, handler, owner=self.plugin_id)
+
     def set_status(self, text: str, level: str = "info") -> None:
         self._app.call_in_ui(self._app.set_status, text, level)
 
@@ -1192,10 +1395,14 @@ class App(ctk.CTk, _DnDBase):
         self._init_dnd()
 
         self.settings = SettingsStore(paths.settings_file, log)
-        themes = dict(BUILTIN_THEMES)
-        themes.update(load_user_themes(paths.themes_dir, log))
-        self.theme = ThemeManager(self, self.settings, themes, log)
+        self.theme = ThemeManager(self, self.settings, paths.themes_dir, log)
         self.theme.subscribe(self._notify_plugins_theme, owner="core")
+        self.theme.subscribe(lambda _p: self._apply_shell_effects(), owner="core")
+        self._file_types: dict[str, tuple[str, str, Callable[[Path], Any]]] = {}
+        self._raw_title = ""
+        self._default_tagline = "Desktop Utility Belt"
+        self._glitch_after: str | None = None
+        self._banner_image: Any = None
 
         self.records: list[PluginRecord] = []
         self._pages: dict[str, Any] = {}
@@ -1215,6 +1422,7 @@ class App(ctk.CTk, _DnDBase):
         self._load_plugins()
         self._rebuild_nav()
         self.theme.apply()
+        self._apply_shell_effects()
         self.select(self._initial_page())
 
         self.bind("<Control-R>", lambda _e: self.reload_plugins())  # Ctrl+Shift+R
@@ -1276,8 +1484,10 @@ class App(ctk.CTk, _DnDBase):
 
     def _build_shell(self) -> None:
         tag = self.theme.tag
-        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(2, weight=1)
         self.grid_rowconfigure(0, weight=1)
+        self._dividers: list[Any] = []
+        self._theme_menus: list[Any] = []
 
         # ── sidebar ──
         self._sidebar = tag(ctk.CTkFrame(self, width=236, corner_radius=0), "sidebar", keep_shape=True)
@@ -1286,8 +1496,9 @@ class App(ctk.CTk, _DnDBase):
         self._sidebar.grid_columnconfigure(0, weight=1)
         self._sidebar.grid_rowconfigure(2, weight=1)
 
-        tag(ctk.CTkLabel(self._sidebar, text=APP_NAME, anchor="w"), "title", font_size=21).grid(
-            row=0, column=0, sticky="ew", padx=18, pady=(20, 0))
+        self._brand_title = tag(ctk.CTkLabel(self._sidebar, text=APP_NAME, anchor="w"), "title", font_size=21)
+        self._brand_title.grid(row=0, column=0, sticky="ew", padx=18, pady=(20, 0))
+        self._brand_banner = tag(ctk.CTkLabel(self._sidebar, text=""), "transparent")
         self._brand_sub = tag(ctk.CTkLabel(self._sidebar, text="Desktop Utility Belt", anchor="w"), "muted")
         self._brand_sub.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 12))
 
@@ -1298,19 +1509,24 @@ class App(ctk.CTk, _DnDBase):
         bottom = tag(ctk.CTkFrame(self._sidebar, fg_color="transparent"), "transparent")
         bottom.grid(row=3, column=0, sticky="ew", padx=12, pady=(6, 14))
         bottom.grid_columnconfigure(0, weight=1)
-        tag(ctk.CTkFrame(bottom, height=1, corner_radius=0, border_width=0), "divider", keep_shape=True).grid(
-            row=0, column=0, sticky="ew", pady=(0, 10))
+        divider = tag(ctk.CTkFrame(bottom, height=1, corner_radius=0, border_width=0), "skip")
+        divider.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        self._dividers.append(divider)
         tag(ctk.CTkLabel(bottom, text="THEME", anchor="w", height=16,
                          font=self.theme.font(11, "bold")), "muted").grid(row=1, column=0, sticky="ew", padx=4)
         self._theme_var = ctk.StringVar(value=self.theme.name)
-        ctk.CTkOptionMenu(bottom, values=self.theme.names(), variable=self._theme_var,
-                          command=self._on_theme_selected, dynamic_resizing=False).grid(
-            row=2, column=0, sticky="ew", pady=(2, 8))
+        menu = ctk.CTkOptionMenu(bottom, values=self.theme.names(), variable=self._theme_var,
+                                 command=self._on_theme_selected, dynamic_resizing=False)
+        menu.grid(row=2, column=0, sticky="ew", pady=(2, 8))
+        self._theme_menus.append(menu)
+
+        # optional coloured stripe between sidebar and content (theme effect)
+        self._stripe = tag(ctk.CTkFrame(self, width=0, corner_radius=0, border_width=0), "skip")
         self._make_nav_button(bottom, SETTINGS_KEY, "⚙", "Settings").grid(row=3, column=0, sticky="ew")
 
         # ── main area ──
         main = tag(ctk.CTkFrame(self, corner_radius=0), "surface", keep_shape=True)
-        main.grid(row=0, column=1, sticky="nsew")
+        main.grid(row=0, column=2, sticky="nsew")
         main.grid_columnconfigure(0, weight=1)
         main.grid_rowconfigure(2, weight=1)
 
@@ -1323,8 +1539,9 @@ class App(ctk.CTk, _DnDBase):
         self._page_desc.grid(row=1, column=0, sticky="ew")
         header.bind("<Configure>", lambda e: self._page_desc.configure(wraplength=max(240, e.width - 20)))
 
-        tag(ctk.CTkFrame(main, height=1, corner_radius=0, border_width=0), "divider", keep_shape=True).grid(
-            row=1, column=0, sticky="ew", padx=26)
+        divider = tag(ctk.CTkFrame(main, height=1, corner_radius=0, border_width=0), "skip")
+        divider.grid(row=1, column=0, sticky="ew", padx=26)
+        self._dividers.append(divider)
 
         self.viewport = tag(ctk.CTkFrame(main, fg_color="transparent", corner_radius=0), "transparent")
         self.viewport.grid(row=2, column=0, sticky="nsew", padx=26, pady=16)
@@ -1343,9 +1560,97 @@ class App(ctk.CTk, _DnDBase):
     def _make_nav_button(self, parent: Any, key: str, icon: str, title: str) -> Any:
         btn = ctk.CTkButton(parent, text=f"{icon}   {title}", anchor="w", height=36,
                             command=lambda k=key: self.select(k))
-        self.theme.tag(btn, "nav", active=False, error=False)
+        self.theme.tag(btn, "nav", active=False, error=False, text=f"{icon}   {title}")
         self._nav_buttons[key] = btn
+        self._render_nav_text(btn)
         return btn
+
+    # ── theme effects (shell decorations a theme pack can enable) ─────────
+    def _render_nav_text(self, btn: Any) -> None:
+        e = self.theme.effects
+        text = getattr(btn, "_mt_text", "") or ""
+        if getattr(btn, "_mt_active", False) and e["nav_active_prefix"]:
+            text = e["nav_active_prefix"] + text
+        if e["uppercase_nav"]:
+            text = text.upper()
+        try:
+            btn.configure(text=text, font=self.theme.font(13, family=self.theme.palette["font"]))
+        except Exception:
+            pass
+
+    def _rendered_title(self) -> str:
+        e = self.theme.effects
+        text = self._raw_title
+        if text and e["uppercase_titles"]:
+            text = text.upper()
+        if text and e["title_prefix"]:
+            text = e["title_prefix"] + text
+        return text
+
+    def _apply_shell_effects(self) -> None:
+        e, p = self.theme.effects, self.theme.palette
+        # brand: banner image from the theme pack, or the app name
+        image = self.theme.banner_image()
+        if image is not None:
+            w, h = image.size
+            scale = min(204 / max(w, 1), 72 / max(h, 1), 1.0)
+            self._banner_image = ctk.CTkImage(light_image=image, dark_image=image,
+                                              size=(max(1, int(w * scale)), max(1, int(h * scale))))
+            self._brand_banner.configure(image=self._banner_image)
+            self._brand_title.grid_remove()
+            self._brand_banner.grid(row=0, column=0, sticky="w", padx=14, pady=(16, 2))
+        else:
+            self._banner_image = None
+            self._brand_banner.grid_remove()
+            self._brand_title.grid()
+        self._brand_sub.configure(text=e["brand_tagline"] or self._default_tagline)
+        # dividers and stripe
+        divider_color = p.get(e["divider_color"], p["border"])
+        for divider in self._dividers:
+            _safe_configure(divider, height=max(1, e["divider_height"]), fg_color=divider_color,
+                            bg_color=divider_color)
+        if e["sidebar_stripe"] > 0:
+            color = p.get(e["sidebar_stripe_color"], p["accent"])
+            _safe_configure(self._stripe, width=e["sidebar_stripe"], fg_color=color, bg_color=color)
+            self._stripe.grid(row=0, column=1, sticky="ns")
+        else:
+            self._stripe.grid_remove()
+        # titles, nav, glitch
+        self._page_title.configure(text=self._rendered_title(), text_color=p["title"])
+        for btn in self._nav_buttons.values():
+            self._render_nav_text(btn)
+        self._schedule_glitch()
+
+    GLITCH_CHARS = "▓▒░█#@%&/\\<>[]=+*01"
+
+    def _schedule_glitch(self) -> None:
+        if self._glitch_after is not None:
+            try:
+                self.after_cancel(self._glitch_after)
+            except Exception:
+                pass
+            self._glitch_after = None
+        if self.theme.effects["glitch_titles"] and not self._closing:
+            self._glitch_after = self.after(random.randint(3500, 9000), self._glitch_step, 0)
+
+    def _glitch_step(self, frame: int) -> None:
+        self._glitch_after = None
+        e, p = self.theme.effects, self.theme.palette
+        if self._closing or not e["glitch_titles"]:
+            return
+        base = self._rendered_title()
+        colors = e["glitch_colors"] or [p["accent2"], p["danger"]]
+        if frame < 4 and base.strip():
+            chars = list(base)
+            for _ in range(max(1, len(chars) // 5)):
+                i = random.randrange(len(chars))
+                if not chars[i].isspace():
+                    chars[i] = random.choice(self.GLITCH_CHARS)
+            self._page_title.configure(text="".join(chars), text_color=colors[frame % len(colors)])
+            self._glitch_after = self.after(70, self._glitch_step, frame + 1)
+        else:
+            self._page_title.configure(text=base, text_color=p["title"])
+            self._schedule_glitch()
 
     # ── plugin lifecycle ──────────────────────────────────────────────────
     def _load_plugins(self) -> None:
@@ -1431,6 +1736,8 @@ class App(ctk.CTk, _DnDBase):
                     self._safe_call(rec, "on_hide")
                 self._safe_call(rec, "shutdown")
             self.theme.unsubscribe_owner(rec.key)
+            for ext in [e for e, (owner, _l, _h) in self._file_types.items() if owner == rec.key]:
+                del self._file_types[ext]
         for frame in self._pages.values():
             try:
                 _container_of(frame).destroy()
@@ -1487,8 +1794,9 @@ class App(ctk.CTk, _DnDBase):
             self.theme.tag(ctk.CTkLabel(self._nav_frame, text="No plugins loaded", anchor="w"), "muted").grid(
                 row=0, column=0, sticky="ew", padx=10, pady=6)
         count = sum(1 for r in visible if not r.error)
-        self._brand_sub.configure(text=f"Desktop Utility Belt · {count} tool{'s' if count != 1 else ''}")
+        self._default_tagline = f"Desktop Utility Belt · {count} tool{'s' if count != 1 else ''}"
         self.theme.apply(self._sidebar)
+        self._apply_shell_effects()
 
     def select(self, key: str) -> None:
         if key == self._active_key and key in self._pages:
@@ -1516,13 +1824,15 @@ class App(ctk.CTk, _DnDBase):
             desc = "This plugin failed to load." if rec.error else rec.description
         else:
             title, desc = "", ""
-        self._page_title.configure(text=title)
+        self._raw_title = title
+        self._page_title.configure(text=self._rendered_title())
         self._page_desc.configure(text=desc)
 
         for k, btn in self._nav_buttons.items():
             active = k == key
             if getattr(btn, "_mt_active", None) != active:
                 btn._mt_active = active
+                self._render_nav_text(btn)
                 self.theme.apply(btn)
 
         if key not in (EMPTY_KEY,):
@@ -1551,8 +1861,9 @@ class App(ctk.CTk, _DnDBase):
                     self.log.error("Plugin %s get_frame failed:\n%s", key, rec.error)
                     btn = self._nav_buttons.get(key)
                     if btn is not None:
-                        btn.configure(text=f"⚠   {rec.title}")
+                        btn._mt_text = f"⚠   {rec.title}"
                         btn._mt_error = True
+                        self._render_nav_text(btn)
                     frame = self._build_error_page(rec)
         if not hasattr(frame, "_mt_role"):
             frame._mt_role = "transparent"  # page roots blend into the viewport by default
@@ -1581,16 +1892,22 @@ class App(ctk.CTk, _DnDBase):
         page = tag(ctk.CTkScrollableFrame(self.viewport, corner_radius=0), "transparent")
         page.grid_columnconfigure(0, weight=1)
 
-        # Appearance
-        body = self._card(page, 0, "Appearance",
-                          "Themes restyle every open tool instantly. Add your own by placing .json "
-                          "files in the themes folder (keys override \"Default Dark\").")
-        tag(ctk.CTkLabel(body, text="Theme", anchor="w"), "text").grid(row=0, column=0, sticky="w", padx=(0, 16))
-        ctk.CTkOptionMenu(body, values=self.theme.names(), variable=self._theme_var,
-                          command=self._on_theme_selected, width=220).grid(row=0, column=1, sticky="w")
-        tag(ctk.CTkButton(body, text="Open themes folder", width=150,
-                          command=lambda: self.open_path(self.paths.themes_dir)), "secondary").grid(
-            row=0, column=2, sticky="e")
+        # Appearance — theme gallery
+        body = self._card(page, 0, "Themes",
+                          "Themes are drop-in packs (.mttheme files). Drop one anywhere on this page or use "
+                          "Install theme… — it's applied straight away. Default Dark is built in and always "
+                          "here to go back to.")
+        bar = tag(ctk.CTkFrame(body, fg_color="transparent"), "transparent")
+        bar.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+        ctk.CTkButton(bar, text="＋  Install theme…", width=150,
+                      command=lambda: self.ask_install("theme")).pack(side="left")
+        tag(ctk.CTkButton(bar, text="Back to default", width=140,
+                          command=lambda: self._on_theme_selected(DEFAULT_THEME)), "secondary").pack(
+            side="left", padx=8)
+        tag(ctk.CTkButton(bar, text="Open themes folder", width=160,
+                          command=lambda: self.open_path(self.paths.themes_dir)), "ghost").pack(side="left")
+        for i, name in enumerate(self.theme.names(), start=1):
+            self._theme_row(body, i, self.theme.info(name))
 
         # Plugins
         body = self._card(page, 1, "Plugins",
@@ -1598,12 +1915,12 @@ class App(ctk.CTk, _DnDBase):
                           "(useful for heavy tools); changes apply on reload (Ctrl+Shift+R).")
         bar = tag(ctk.CTkFrame(body, fg_color="transparent"), "transparent")
         bar.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 10))
-        ctk.CTkButton(bar, text="＋  Add plugin…", width=140, command=self.ask_install_plugin).pack(side="left")
+        ctk.CTkButton(bar, text="＋  Install…", width=130, command=self.ask_install).pack(side="left")
         tag(ctk.CTkButton(bar, text="Reload plugins", width=140, command=self.reload_plugins),
             "secondary").pack(side="left", padx=8)
         tag(ctk.CTkButton(bar, text="Open plugins folder", width=160,
                           command=lambda: self.open_path(self.paths.plugins_dir)), "secondary").pack(side="left")
-        tag(ctk.CTkLabel(bar, text="or drop a plugin .py / .zip anywhere on this page"), "muted").pack(
+        tag(ctk.CTkLabel(bar, text="or drop plugins, themes or characters anywhere on this page"), "muted").pack(
             side="left", padx=12)
         if not self.records:
             tag(ctk.CTkLabel(body, text="No plugin files found.", anchor="w"), "muted").grid(
@@ -1661,6 +1978,66 @@ class App(ctk.CTk, _DnDBase):
         self.register_drop_target(page, self._on_plugin_drop, accept=("files",))
         return page
 
+    def _theme_row(self, parent: Any, row: int, info: ThemeInfo) -> None:
+        tag = self.theme.tag
+        active = info.name == self.theme.name
+        swatches = tag(ctk.CTkFrame(parent, fg_color="transparent"), "transparent")
+        swatches.grid(row=row, column=0, sticky="w", pady=5, padx=(0, 14))
+        for key in ("bg", "card", "accent", "accent2", "selected", "text"):
+            tag(ctk.CTkFrame(swatches, width=20, height=26, corner_radius=0, fg_color=info.palette[key],
+                             border_width=1, border_color=info.palette["border"]), "skip").pack(side="left")
+        text_box = tag(ctk.CTkFrame(parent, fg_color="transparent"), "transparent")
+        text_box.grid(row=row, column=1, sticky="ew")
+        tag(ctk.CTkLabel(text_box, text=info.name + (f"   v{info.version}" if info.version else ""), anchor="w",
+                         font=self.theme.font(13, "bold")), "text").pack(fill="x")
+        byline = " · ".join(x for x in (info.author or "", info.description) if x)
+        tag(ctk.CTkLabel(text_box, text=byline, anchor="w", justify="left", wraplength=520), "muted").pack(fill="x")
+        actions = tag(ctk.CTkFrame(parent, fg_color="transparent"), "transparent")
+        actions.grid(row=row, column=2, sticky="e")
+        if active:
+            tag(ctk.CTkLabel(actions, text="●  Active", width=90), "success").pack(side="left", padx=4)
+        else:
+            tag(ctk.CTkButton(actions, text="Apply", width=90,
+                              command=lambda n=info.name: self._on_theme_selected(n)), "secondary").pack(
+                side="left", padx=4)
+        if not info.builtin:
+            tag(ctk.CTkButton(actions, text="Remove", width=80,
+                              command=lambda n=info.name: self._remove_theme(n)), "ghost").pack(side="left")
+
+    def _refresh_settings_page(self) -> None:
+        """Rebuild Settings (after a theme/plugin change) — deferred so a button can trigger it safely."""
+        def rebuild() -> None:
+            frame = self._pages.pop(SETTINGS_KEY, None)
+            if frame is None:
+                return
+            was_active = self._active_key == SETTINGS_KEY
+            try:
+                _container_of(frame).destroy()
+            except Exception:
+                pass
+            if was_active:
+                self._active_key = None
+                self.select(SETTINGS_KEY)
+        self.after(10, rebuild)
+
+    def _refresh_theme_menus(self) -> None:
+        for menu in self._theme_menus:
+            try:
+                menu.configure(values=self.theme.names())
+            except Exception:
+                pass
+        self._theme_var.set(self.theme.name)
+
+    def _remove_theme(self, name: str) -> None:
+        try:
+            self.theme.remove(name)
+        except Exception as exc:
+            self.set_status(f"Couldn't remove theme: {exc}", "error")
+            return
+        self._refresh_theme_menus()
+        self._refresh_settings_page()
+        self.set_status(f"Removed theme {name}", "success")
+
     def _build_error_page(self, rec: PluginRecord) -> Any:
         tag = self.theme.tag
         page = ctk.CTkFrame(self.viewport, fg_color="transparent")
@@ -1692,7 +2069,7 @@ class App(ctk.CTk, _DnDBase):
                           "an underscore are ignored.")
         tag(ctk.CTkLabel(body, text=str(self.paths.plugins_dir), anchor="w"), "accent").grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
-        ctk.CTkButton(body, text="＋  Add plugin…", width=150, command=self.ask_install_plugin).grid(
+        ctk.CTkButton(body, text="＋  Install…", width=150, command=self.ask_install).grid(
             row=1, column=0, sticky="w")
         tag(ctk.CTkButton(body, text="Open plugins folder", width=170,
                           command=lambda: self.open_path(self.paths.plugins_dir)), "secondary").grid(
@@ -1760,6 +2137,7 @@ class App(ctk.CTk, _DnDBase):
     def set_status(self, text: str, level: str = "info") -> None:
         role = {"info": "muted", "success": "success", "warning": "warning", "error": "danger"}.get(level, "muted")
         text = " ".join(str(text).split())
+        text = self.theme.effects["status_prefix"] + text
         self._status_label.configure(text=text[:300] + ("…" if len(text) > 300 else ""))
         self.theme.tag(self._status_label, role)
         self.theme.apply(self._status_label)
@@ -1851,23 +2229,70 @@ class App(ctk.CTk, _DnDBase):
             pass
 
     # ── plugin installation ───────────────────────────────────────────────
-    def ask_install_plugin(self) -> None:
+    def register_file_type(self, extension: str, label: str, handler: Callable[[Path], Any],
+                           owner: str = "core") -> None:
+        ext = extension.lower() if extension.startswith(".") else "." + extension.lower()
+        self._file_types[ext] = (owner, label, handler)
+
+    def ask_install(self, kind: str = "any") -> None:
         from tkinter import filedialog
-        chosen = filedialog.askopenfilenames(parent=self, title="Add plugins",
-                                             filetypes=[("Multi-Tool plugins", "*.py *.zip"), ("All files", "*.*")])
+        types = [("Themes", "*.mttheme")] if kind == "theme" else [
+            ("Everything Multi-Tool can install",
+             " ".join(["*.py", "*.zip", "*.mttheme"] + [f"*{e}" for e in self._file_types])),
+            ("Plugins", "*.py *.zip"), ("Themes", "*.mttheme"),
+        ] + [(label, f"*{ext}") for ext, (_o, label, _h) in self._file_types.items()]
+        chosen = filedialog.askopenfilenames(parent=self, title="Install into Multi-Tool",
+                                             filetypes=types + [("All files", "*.*")])
         if chosen:
-            self.install_plugins([Path(c) for c in chosen])
+            self.install_files([Path(c) for c in chosen])
+
+    def ask_install_plugin(self) -> None:
+        self.ask_install()
 
     def _on_plugin_drop(self, payload: DropPayload) -> None:
         if payload.files:
-            self.install_plugins(payload.files)
+            self.install_files(payload.files)
         else:
-            self.set_status("Drop plugin files (.py or .zip) here.", "warning")
+            self.set_status("Drop plugin, theme or character files here.", "warning")
 
-    def install_plugins(self, files: list[Path]) -> None:
+    def install_files(self, files: list[Path]) -> None:
+        """One entry point for everything installable: plugins (.py/.zip), themes (.mttheme)
+        and any file type a plugin registered (e.g. companion characters)."""
+        plugin_files: list[Path] = []
+        problems: list[str] = []
+        themes: list[str] = []
+        handled: list[str] = []
+        for src in files:
+            suffix = src.suffix.lower()
+            try:
+                if suffix == ".mttheme":
+                    themes.append(self.theme.install(src))
+                elif suffix in (".py", ".zip"):
+                    plugin_files.append(src)
+                elif suffix in self._file_types:
+                    _owner, label, handler = self._file_types[suffix]
+                    result = handler(src)
+                    handled.append(str(result or src.name))
+                else:
+                    problems.append(f"{src.name} (not a plugin, theme or known file type)")
+            except Exception as exc:
+                self.log.exception("Install of %s failed", src)
+                problems.append(f"{src.name} ({exc})")
+        if themes:
+            self._refresh_theme_menus()
+            self._on_theme_selected(themes[-1])
+            self.set_status(f"Installed theme: {', '.join(themes)}", "success")
+        if handled:
+            self.set_status(f"Installed: {', '.join(handled)}", "success")
+        if plugin_files:
+            self.install_plugins(plugin_files, problems)
+        elif problems:
+            self.set_status("Not installed: " + "; ".join(problems), "error" if not (themes or handled) else "warning")
+
+    def install_plugins(self, files: list[Path], problems: list[str] | None = None) -> None:
         """Copy .py plugins (or .zip packages containing one plugin folder) into plugins/, then reload."""
         installed: list[str] = []
-        problems: list[str] = []
+        problems = problems if problems is not None else []
         for src in files:
             try:
                 suffix = src.suffix.lower()
@@ -1925,6 +2350,7 @@ class App(ctk.CTk, _DnDBase):
     def _on_theme_selected(self, name: str) -> None:
         self._theme_var.set(name)
         self.theme.set_theme(name)
+        self._refresh_settings_page()
 
     def _toggle_plugin(self, key: str, enabled: bool) -> None:
         disabled = set(self.settings.get("core", "disabled_plugins", []) or [])
@@ -1951,6 +2377,7 @@ class App(ctk.CTk, _DnDBase):
                 self.settings.set("core", "geometry", self.geometry())
         except Exception:
             self.log.exception("Could not save window geometry")
+        self._schedule_glitch()  # cancels the pending glitch timer (closing flag is set)
         self._unload_plugins()
         self.log.info("Shutting down")
         self.destroy()

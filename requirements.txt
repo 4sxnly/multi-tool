@@ -5,7 +5,8 @@
 # ── Core shell ──────────────────────────────────────────────────────────
 customtkinter>=5.2.2
 tkinterdnd2>=0.4.2
-Pillow>=11.0          # thumbnails now; screenshots/textures later
+Pillow>=11.0          # thumbnails, screenshots, theme banners, textures
+pywin32>=306; sys_platform == "win32"   # Windows speech (companion voice), clipboard, window APIs
 
 # ── Build tooling ───────────────────────────────────────────────────────
 pyinstaller>=6.10
@@ -19,4 +20,3 @@ pyinstaller>=6.10
 # requests            # Module 5: Roblox Open Cloud API
 # pytesseract         # Module 8: wrapper around bin/tesseract/tesseract.exe
 # pynput              # Modules 2/7/8: global hotkeys
-# pywin32             # Module 9: native clipboard listener

@@ -21,6 +21,8 @@ BUNDLED_PACKAGES = [
     "PIL",           # Pillow: thumbnails, screenshots, textures
     "darkdetect",    # customtkinter dependency
 ]
+if sys.platform == "win32":
+    BUNDLED_PACKAGES.append("win32com")
 
 # ── whole standard library ──────────────────────────────────────────────────
 SKIP_STDLIB = {
@@ -49,6 +51,11 @@ for top in sorted(sys.stdlib_module_names):
         hiddenimports += [m for m in collect_submodules(top, filter=_keep) if _keep(m)] or [top]
     except Exception:
         hiddenimports.append(top)
+
+# pywin32 (Windows speech via SAPI COM, clipboard, window APIs) — its PyInstaller hooks bundle the DLLs
+if sys.platform == "win32":
+    hiddenimports += ["win32com.client", "pythoncom", "pywintypes", "win32api", "win32con", "win32gui",
+                      "win32clipboard"]
 
 datas, binaries = [], []
 for pkg in BUNDLED_PACKAGES:

@@ -9,7 +9,7 @@
 #define AppName "Multi-Tool"
 #define AppExe "MultiTool.exe"
 #ifndef AppVersion
-  #define AppVersion "0.2.0"
+  #define AppVersion "0.3.0"
 #endif
 #define IconFile AddBackslash(SourcePath) + "..\assets\icon.ico"
 
@@ -46,7 +46,11 @@ Name: "custom"; Description: "Choose tools"; Flags: iscustom
 Name: "core"; Description: "{#AppName} app + bundled engines (required)"; Types: full custom; Flags: fixed
 Name: "tools"; Description: "Tools"; Types: full
 Name: "tools\media"; Description: "Media Downloader — YouTube, TikTok, X and more"; Types: full
+Name: "tools\companion"; Description: "Desktop Companion — a chat character with an offline AI"; Types: full
 Name: "tools\demo"; Description: "Drop Zone demo (for plugin developers)"
+Name: "extras"; Description: "Extras"; Types: full
+Name: "extras\overdrive"; Description: "Overdrive 2099 theme"; Types: full
+Name: "extras\vex"; Description: "Vex — extra companion character"; Types: full
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
@@ -55,7 +59,12 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Source: "..\dist\MultiTool\*"; DestDir: "{app}"; Components: core; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\bin\*"; DestDir: "{app}\bin"; Components: core; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\plugins\media_downloader.py"; DestDir: "{app}\plugins"; Components: tools\media; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\plugins\desktop_companion.py"; DestDir: "{app}\plugins"; Components: tools\companion; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\plugins\dropzone_demo.py"; DestDir: "{app}\plugins"; Components: tools\demo; Flags: ignoreversion skipifsourcedoesntexist
+; themes go straight into the user's themes folder so they show up in Settings ▸ Themes
+Source: "..\extras\themes\overdrive-2099.mttheme"; DestDir: "{userappdata}\MultiTool\themes"; Components: extras\overdrive; Flags: ignoreversion skipifsourcedoesntexist
+; character packs are imported by the companion on its next start
+Source: "..\extras\characters\vex.mtchar"; DestDir: "{app}\extras\characters"; Components: extras\vex; Flags: ignoreversion skipifsourcedoesntexist
 
 [Dirs]
 Name: "{app}\plugins"
@@ -72,3 +81,5 @@ Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait pos
 ; yt-dlp self-updates leave a backup next to the exe
 Type: files; Name: "{app}\bin\*.old"
 Type: filesandordirs; Name: "{app}\plugins\__pycache__"
+; offline AI models downloaded by the companion (several GB)
+Type: filesandordirs; Name: "{localappdata}\MultiTool\models"
