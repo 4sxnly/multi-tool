@@ -15,19 +15,48 @@ function Get-File([string]$url, [string]$out) {
     Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
 }
 
+# Checksum files come in different shapes and encodings (UTF-8, UTF-16 from PowerShell,
+# "hash  filename" lists, or "Hash : ..." blocks). Normalise to plain text first.
+function ConvertTo-PlainText($content) {
+    if ($content -is [byte[]]) {
+        $bytes = $content
+        if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+            $text = [System.Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2)
+        } elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+            $text = [System.Text.Encoding]::BigEndianUnicode.GetString($bytes, 2, $bytes.Length - 2)
+        } else {
+            $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+        }
+    } else {
+        $text = [string]$content
+    }
+    return $text.Replace([string][char]0, "")
+}
+
 function Assert-Sha256([string]$file, [string]$sumsUrl, [string]$assetName, [switch]$Optional) {
     try {
-        $sums = (Invoke-WebRequest -Uri $sumsUrl -UseBasicParsing).Content
+        $raw = (Invoke-WebRequest -Uri $sumsUrl -UseBasicParsing).Content
     } catch {
         if ($Optional) { Write-Warning "No checksum list at $sumsUrl - skipping verification of $assetName"; return }
         throw
     }
-    if ($sums -is [byte[]]) { $sums = [System.Text.Encoding]::UTF8.GetString($sums) }
-    $lines = $sums -split "`n" | Where-Object { $_.Trim() }
-    $line = $lines | Where-Object { $_ -match [regex]::Escape($assetName) } | Select-Object -First 1
-    if (-not $line -and $lines.Count -eq 1) { $line = $lines[0] }
-    $expected = [regex]::Match("$line", "\b[0-9a-fA-F]{64}\b").Value.ToLower()
+    $text = ConvertTo-PlainText $raw
+    $hashPattern = "(?<![0-9a-fA-F])[0-9a-fA-F]{64}(?![0-9a-fA-F])"
+    $all = @([regex]::Matches($text, $hashPattern) | ForEach-Object { $_.Value.ToLower() } | Select-Object -Unique)
+
+    $expected = $null
+    if ($all.Count -eq 1) {
+        # single-asset checksum file (any layout)
+        $expected = $all[0]
+    } elseif ($all.Count -gt 1) {
+        # multi-asset list: take the hash on the line that names this asset
+        $line = ($text -split "\r?\n") |
+            Where-Object { $_ -match ([regex]::Escape($assetName) + "\s*$") } |
+            Select-Object -First 1
+        if ($line) { $expected = [regex]::Match($line, $hashPattern).Value.ToLower() }
+    }
     if (-not $expected) { throw "No checksum for $assetName in $sumsUrl" }
+
     $actual = (Get-FileHash -Algorithm SHA256 -Path $file).Hash.ToLower()
     if ($actual -ne $expected) { throw "Checksum mismatch for $assetName (expected $expected, got $actual)" }
     Write-Host "  sha256 OK  $assetName"
