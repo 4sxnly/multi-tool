@@ -95,4 +95,72 @@ if ($license) { Copy-Item $license.FullName (Join-Path $bin "FFMPEG-LICENSE.txt"
 # ── llama.cpp server: offline AI for the Desktop Companion ──
 # Two official builds: Vulkan (uses almost any graphics card) and CPU (works everywhere).
 Write-Host "llama.cpp"
-$ghHeaders = @{ "User-Agent" = "multitool-build";
+$ghHeaders = @{ "User-Agent" = "multitool-build"; "Accept" = "application/vnd.github+json" }
+if ($env:GITHUB_TOKEN) { $ghHeaders["Authorization"] = "Bearer $env:GITHUB_TOKEN" }
+$api = "https://api.github.com/repos/ggml-org/llama.cpp/releases"
+function Test-HasWindowsBuilds($rel) {
+    $names = @($rel.assets | ForEach-Object { $_.name })
+    return (($names -match "-bin-win-cpu-x64\.zip$").Count -gt 0) -and (($names -match "-bin-win-vulkan-x64\.zip$").Count -gt 0)
+}
+# Stable releases (v0.x.y) ship source only; their notes name the nightly build (bNNNNN) that has the binaries.
+$release = $null
+$stable = Invoke-RestMethod -Uri "$api/latest" -Headers $ghHeaders
+if (Test-HasWindowsBuilds $stable) {
+    $release = $stable
+} else {
+    $nightly = [regex]::Match("$($stable.body)", "Nightly build:\W*(b\d+)").Groups[1].Value
+    if ($nightly) {
+        try {
+            $candidate = Invoke-RestMethod -Uri "$api/tags/$nightly" -Headers $ghHeaders
+            if (Test-HasWindowsBuilds $candidate) { $release = $candidate }
+        } catch { Write-Warning "Nightly $nightly not found: $_" }
+    }
+}
+if (-not $release) {  # fall back to the newest release that has Windows binaries
+    $recent = Invoke-RestMethod -Uri "${api}?per_page=40" -Headers $ghHeaders
+    $release = $recent | Where-Object { Test-HasWindowsBuilds $_ } | Select-Object -First 1
+}
+if (-not $release) { throw "Couldn't find a llama.cpp release with Windows CPU + Vulkan builds" }
+Write-Host "  using $($release.tag_name) (latest stable: $($stable.tag_name))"
+foreach ($variant in @("cpu", "vulkan")) {
+    $asset = $release.assets | Where-Object { $_.name -match "^llama-.*-bin-win-$variant-x64\.zip$" } | Select-Object -First 1
+    if (-not $asset) { throw "llama.cpp $($release.tag_name) has no win-$variant-x64 zip" }
+    $zip = Join-Path $tmp $asset.name
+    Get-File $asset.browser_download_url $zip
+    if ($asset.digest -and "$($asset.digest)".StartsWith("sha256:")) {
+        $expected = "$($asset.digest)".Substring(7).ToLower()
+        $actual = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
+        if ($actual -ne $expected) { throw "Checksum mismatch for $($asset.name)" }
+        Write-Host "  sha256 OK  $($asset.name)"
+    } else {
+        Write-Warning "GitHub published no digest for $($asset.name)"
+    }
+    $unzipped = Join-Path $tmp "llama-$variant"
+    if (Test-Path $unzipped) { Remove-Item $unzipped -Recurse -Force }
+    Expand-Archive -Path $zip -DestinationPath $unzipped -Force
+    $server = Get-ChildItem -Path $unzipped -Recurse -File -Filter "llama-server.exe" | Select-Object -First 1
+    if (-not $server) { throw "llama-server.exe not found in $($asset.name)" }
+    $dest = Join-Path $bin "llama-$variant"
+    if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    Copy-Item (Join-Path $server.DirectoryName "*") $dest -Recurse -Force
+    # keep only the server (+ its DLLs); the other llama.cpp tools aren't used
+    Get-ChildItem $dest -Filter "*.exe" | Where-Object { $_.Name -ne "llama-server.exe" } | Remove-Item -Force
+    # Visual C++ + OpenMP runtimes next to the exe, so no redistributable has to be installed
+    foreach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "msvcp140_1.dll",
+                       "msvcp140_2.dll", "vcomp140.dll")) {
+        $src = Join-Path $env:SystemRoot "System32\$dll"
+        if ((Test-Path $src) -and -not (Test-Path (Join-Path $dest $dll))) { Copy-Item $src $dest }
+    }
+}
+& (Join-Path $bin "llama-cpu\llama-server.exe") --version
+if ($LASTEXITCODE -ne 0) { throw "llama-server (CPU) failed its self-test" }
+
+# ── Tesseract OCR: added when the Optics module (8) is built ──
+
+Write-Host ""
+Write-Host "bin\ now contains:"
+Get-ChildItem $bin | Format-Table Name, @{n = "MB"; e = { [math]::Round($_.Length / 1MB, 1) } } -AutoSize
+& (Join-Path $bin "yt-dlp.exe") --version
+& (Join-Path $bin "deno.exe") --version
+& (Join-Path $bin "ffmpeg.exe") -hide_banner -version | Select-Object -First 1
