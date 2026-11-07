@@ -140,7 +140,7 @@ _CTkCanvas = getattr(ctk, "CTkCanvas", None)
 
 APP_NAME = "Multi-Tool"          # placeholder product name — change in one place
 APP_ID = "MultiTool"             # filesystem / mutex safe id
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 PLUGIN_API_VERSION = 1
 PLUGIN_NAMESPACE = "multitool_plugins"
 
@@ -171,58 +171,59 @@ URL_RE = re.compile(r"https?://[^\s<>\"'{}|\\^`]+", re.IGNORECASE)
 
 BUILTIN_THEMES: dict[str, dict[str, Any]] = {
     "Default Dark": {
-        "bg": "#111116",
-        "surface": "#111116",
-        "sidebar": "#181824",
-        "card": "#181824",
-        "card_hover": "#20202e",
-        "control": "#202030",
-        "control_hover": "#2a2a3e",
-        "border": "#262636",
-        "border_strong": "#3a3a52",
-        "text": "#e4e4ec",
-        "text_muted": "#8a8aa0",
-        "title": "#f5f5fa",
-        "accent": "#4c6ef5",
-        "accent_hover": "#3b5bdb",
+        "bg": "#0e0f14",
+        "surface": "#0e0f14",
+        "sidebar": "#14151c",
+        "card": "#171922",
+        "card_hover": "#1f2230",
+        "control": "#1d202b",
+        "control_hover": "#282c3b",
+        "border": "#242836",
+        "border_strong": "#363b4f",
+        "text": "#e6e7ee",
+        "text_muted": "#8b8fa3",
+        "title": "#f5f6fa",
+        "accent": "#6c7bff",
+        "accent_hover": "#5867f0",
         "accent_text": "#ffffff",
-        "accent2": "#a5acc4",
-        "selected": "#4c6ef5",
-        "selected_hover": "#3b5bdb",
-        "danger": "#e5484d",
-        "danger_hover": "#c93c41",
-        "success": "#3fb950",
-        "warning": "#d29922",
-        "entry_bg": "#0c0c11",
-        "scrollbar": "#2a2a3c",
-        "scrollbar_hover": "#3d3d56",
-        "nav_active_bg": "#24243a",
+        "accent2": "#9da5c0",
+        "selected": "#6c7bff",
+        "selected_hover": "#5867f0",
+        "danger": "#ef5b5b",
+        "danger_hover": "#d94848",
+        "success": "#43c47a",
+        "warning": "#e3a83a",
+        "entry_bg": "#0b0c10",
+        "scrollbar": "#2a2d3c",
+        "scrollbar_hover": "#3b3f53",
+        "nav_active_bg": "#1f2233",
         "nav_active_text": "#ffffff",
-        "nav_active_border": "#24243a",
+        "nav_active_border": "#1f2233",
         "nav_active_border_width": 0,
-        "drop_highlight": "#4c6ef5",
+        "drop_highlight": "#6c7bff",
+        "shadow": "#07080b",
         "card_border_width": 1,
-        "radius": 8,
+        "radius": 10,
         "font": "Segoe UI",
         "title_font": "Segoe UI Semibold",
         "mono_font": "Consolas",
     },
     "Cyberpunk Neon": {
-        "bg": "#080810",
-        "surface": "#080810",
-        "sidebar": "#0b0b16",
-        "card": "#0e0e1c",
-        "card_hover": "#17172e",
-        "control": "#12122a",
-        "control_hover": "#1d1d40",
-        "border": "#00ffcc",
+        "bg": "#07070d",
+        "surface": "#07070d",
+        "sidebar": "#0a0a14",
+        "card": "#0d0d1a",
+        "card_hover": "#16162c",
+        "control": "#11112a",
+        "control_hover": "#1c1c40",
+        "border": "#00b896",
         "border_strong": "#00ffcc",
         "text": "#d8fff6",
-        "text_muted": "#7184a3",
+        "text_muted": "#6f82a1",
         "title": "#00ffcc",
         "accent": "#00ffcc",
         "accent_hover": "#00d9ad",
-        "accent_text": "#080810",
+        "accent_text": "#07070d",
         "accent2": "#ff2bd6",
         "selected": "#ff2bd6",
         "selected_hover": "#d91fb5",
@@ -230,18 +231,19 @@ BUILTIN_THEMES: dict[str, dict[str, Any]] = {
         "danger_hover": "#e0204f",
         "success": "#39ff14",
         "warning": "#ffe600",
-        "entry_bg": "#05050b",
+        "entry_bg": "#04040a",
         "scrollbar": "#3a1046",
         "scrollbar_hover": "#ff2bd6",
-        "nav_active_bg": "#170c26",
+        "nav_active_bg": "#140c24",
         "nav_active_text": "#ff2bd6",
         "nav_active_border": "#ff2bd6",
         "nav_active_border_width": 1,
         "drop_highlight": "#ff2bd6",
+        "shadow": "#5a0f4c",
         "card_border_width": 1,
-        "radius": 2,
+        "radius": 0,
         "font": "Segoe UI",
-        "title_font": "Consolas",
+        "title_font": "Bahnschrift Condensed",
         "mono_font": "Consolas",
     },
 }
@@ -287,7 +289,116 @@ EFFECT_DEFAULTS: dict[str, Any] = {
     "divider_color": "border",   # palette key for those dividers
     "sidebar_stripe": 0,         # width of a coloured stripe between sidebar and content
     "sidebar_stripe_color": "accent",
+    # layered / "3D" panels
+    "card_echo": 0,              # offset (px) of an outline copy behind every card — stacked-panel depth
+    "card_echo_color": "shadow", # palette key for that echo
+    "corner_brackets": 0,        # length (px) of HUD corner brackets on cards
+    "bracket_color": "accent",
+    "nav_indicator": 0,          # width (px) of a bar on the selected sidebar entry
+    # header
+    "title_size": 24,
+    "title_shadow": "",          # palette key: offset copy behind the page title (chromatic/3D)
+    "title_decrypt": False,      # page title "decrypts" into place when a page opens
+    "kicker": "",                # small line above the title, e.g. "MODULE_{index:02d} // {state}"
+    "hex_ticker": False,         # streaming hex telemetry in the header
+    # motion
+    "scan_sweep": False,         # a scan line sweeps the page when it opens
+    "boot_sequence": False,      # terminal boot animation when the app starts
+    "boot_lines": [],            # custom boot text lines
+    # status bar
+    "status_clock": False,
+    "status_telemetry": False,   # live CPU / memory readout
+    "blink_cursor": False,
+    # typography
+    "body_font": "",             # font family for all regular text (e.g. a monospace terminal look)
+    # sound
+    "synth_sounds": "",          # built-in synthesized UI sound set: neon, hazard, phosphor, amber, soft
 }
+EFFECT_LIMITS = {"title_size": (14, 40), "card_echo": (0, 16), "corner_brackets": (0, 40)}
+SOUND_EVENTS = ("click", "nav", "open", "success", "error", "notify", "boot")
+
+
+# ── synthesized UI sounds (no audio files needed) ───────────────────────────
+# A note: (start s, duration s, start Hz, end Hz, wave, volume). Waves: sine, square, saw, tri, noise.
+SYNTH_RATE = 22050
+_SYNTH_STYLES: dict[str, dict[str, Any]] = {
+    "neon": {"wave": "square", "bright": 1.0, "drive": 1.6},
+    "hazard": {"wave": "saw", "bright": 0.8, "drive": 2.6},
+    "phosphor": {"wave": "sine", "bright": 0.9, "drive": 1.0},
+    "amber": {"wave": "tri", "bright": 0.7, "drive": 1.2},
+    "soft": {"wave": "sine", "bright": 1.1, "drive": 1.0},
+}
+
+
+def _synth_events(style: str) -> dict[str, list[tuple]]:
+    w = _SYNTH_STYLES.get(style, _SYNTH_STYLES["soft"])["wave"]
+    b = _SYNTH_STYLES.get(style, _SYNTH_STYLES["soft"])["bright"]
+    rnd = random.Random(style)
+    boot = [(0.0, 0.75, 70 * b, 900 * b, "saw" if w != "sine" else "sine", 0.16),
+            (0.0, 0.6, 0, 0, "noise", 0.035)]
+    for i in range(14):
+        boot.append((0.08 + i * 0.045, 0.028, rnd.choice((1200, 1600, 2000, 2400, 2800)) * b,
+                     None, w, 0.10))
+    boot += [(0.82, 0.7, 523 * b, None, "tri", 0.16), (0.82, 0.7, 659 * b, None, "tri", 0.13),
+             (0.82, 0.7, 784 * b, None, "tri", 0.12), (0.86, 0.66, 1046 * b, None, w, 0.07)]
+    return {
+        "click": [(0, 0.032, 2500 * b, 2100 * b, w, 0.22), (0, 0.012, 0, 0, "noise", 0.05)],
+        "nav": [(0, 0.045, 900 * b, 1350 * b, w, 0.18), (0.04, 0.06, 1800 * b, None, "sine", 0.20)],
+        "open": [(0, 0.2, 300 * b, 1400 * b, "saw" if w != "sine" else "sine", 0.12),
+                 (0.12, 0.12, 1568 * b, None, "sine", 0.18), (0.18, 0.16, 2093 * b, None, "sine", 0.14)],
+        "success": [(0, 0.12, 1046 * b, None, w, 0.16), (0.07, 0.12, 1318 * b, None, w, 0.16),
+                    (0.14, 0.22, 1568 * b, None, w, 0.18)],
+        "error": [(0, 0.11, 230, 190, "square", 0.22), (0.12, 0.2, 180, 140, "square", 0.22),
+                  (0, 0.3, 0, 0, "noise", 0.03)],
+        "notify": [(0, 0.16, 1568 * b, None, "sine", 0.24), (0.11, 0.3, 2093 * b, None, "sine", 0.22),
+                   (0.11, 0.3, 1046 * b, None, w, 0.06)],
+        "boot": boot,
+    }
+
+
+def synth_wav(style: str, event: str) -> bytes:
+    """Render one UI sound to WAV bytes (pure Python, ~10 ms)."""
+    import math
+    import struct
+    import wave
+    notes = _synth_events(style).get(event, [])
+    drive = _SYNTH_STYLES.get(style, _SYNTH_STYLES["soft"])["drive"]
+    length = max((n[0] + n[1] for n in notes), default=0.05) + 0.02
+    total = int(length * SYNTH_RATE)
+    buf = [0.0] * total
+    rnd = random.Random(event)
+    for start, dur, f0, f1, shape, vol in notes:
+        f1 = f0 if f1 is None else f1
+        first, count = int(start * SYNTH_RATE), int(dur * SYNTH_RATE)
+        phase = 0.0
+        tau = max(dur / 3.2, 0.004)
+        for i in range(count):
+            j = first + i
+            if j >= total:
+                break
+            t = i / SYNTH_RATE
+            freq = f0 + (f1 - f0) * (i / max(count - 1, 1))
+            phase = (phase + freq / SYNTH_RATE) % 1.0
+            if shape == "sine":
+                v = math.sin(2 * math.pi * phase)
+            elif shape == "square":
+                v = 1.0 if phase < 0.5 else -1.0
+            elif shape == "saw":
+                v = 2.0 * phase - 1.0
+            elif shape == "tri":
+                v = 4.0 * abs(phase - 0.5) - 1.0
+            else:
+                v = rnd.uniform(-1.0, 1.0)
+            env = min(1.0, t / 0.003) * math.exp(-t / tau) * min(1.0, (dur - t) / 0.008)
+            buf[j] += v * vol * env
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(SYNTH_RATE)
+        wav.writeframes(b"".join(struct.pack("<h", int(32000 * math.tanh(v * drive) / math.tanh(drive)))
+                                 for v in buf))
+    return out.getvalue()
 
 
 @dataclass
@@ -300,6 +411,7 @@ class ThemeInfo:
     version: str = ""
     source: Path | None = None   # None = built into the app (cannot be removed)
     banner: str | None = None    # image inside a zipped .mttheme, shown instead of the app name
+    sounds: dict[str, str] = field(default_factory=dict)  # event -> wav inside a zipped .mttheme
 
     @property
     def builtin(self) -> bool:
@@ -307,9 +419,27 @@ class ThemeInfo:
 
 
 BUILTIN_THEME_INFO: dict[str, dict[str, Any]] = {
-    "Default Dark": {"description": "Clean slate greys. The default — always available.", "effects": {}},
-    "Cyberpunk Neon": {"description": "Near-black canvas, neon cyan lines, hot magenta accents.",
-                       "effects": {"nav_active_prefix": "› ", "status_prefix": "> "}},
+    "Default Dark": {
+        "description": "Calm graphite with soft depth and an indigo accent. The default — always available.",
+        "effects": {"card_echo": 4, "card_echo_color": "shadow", "nav_indicator": 3, "status_clock": True,
+                    "title_size": 26},
+    },
+    "Cyberpunk Neon": {
+        "description": "Near-black HUD: neon cyan frames, magenta depth layers, decrypting titles, live telemetry.",
+        "effects": {"nav_active_prefix": "› ", "status_prefix": "> ", "uppercase_titles": True,
+                    "card_echo": 6, "card_echo_color": "accent2", "corner_brackets": 12,
+                    "bracket_color": "border_strong", "nav_indicator": 3, "title_shadow": "accent2",
+                    "title_decrypt": True, "title_size": 28, "kicker": "MODULE_{index:02d} // {state}",
+                    "hex_ticker": True, "scan_sweep": True, "status_clock": True, "status_telemetry": True,
+                    "blink_cursor": True, "sidebar_stripe": 1, "sidebar_stripe_color": "accent",
+                    "divider_color": "accent2", "synth_sounds": "neon", "boot_sequence": True,
+                    "boot_lines": ["NEURAL LINK // MULTI-TOOL v{version}",
+                                   "> ICE breaker .............. bypassed",
+                                   "> mounting modules ......... {plugins} found",
+                                   "> optics calibration ....... ok",
+                                   "> theme ..................... {theme}",
+                                   "LINK ESTABLISHED"]},
+    },
 }
 
 
@@ -324,11 +454,15 @@ def _merge_effects(raw: Any, warnings: list[str]) -> dict[str, Any]:
         elif isinstance(default, bool):
             effects[key] = bool(value)
         elif isinstance(default, int) and isinstance(value, (int, float)) and not isinstance(value, bool):
-            effects[key] = max(0, min(int(value), 12))
+            lo, hi = EFFECT_LIMITS.get(key, (0, 12))
+            effects[key] = max(lo, min(int(value), hi))
         elif isinstance(default, list) and isinstance(value, list):
-            effects[key] = [v for v in value if isinstance(v, str) and HEX_COLOR_RE.match(v)]
+            if key == "glitch_colors":
+                effects[key] = [v for v in value if isinstance(v, str) and HEX_COLOR_RE.match(v)]
+            else:
+                effects[key] = [str(v)[:90] for v in value[:16]]
         elif isinstance(default, str) and isinstance(value, str):
-            effects[key] = value[:40]
+            effects[key] = value[:60]
         else:
             warnings.append(f"invalid effect {key!r}")
     return effects
@@ -348,6 +482,7 @@ def read_theme_pack(path: Path) -> tuple[ThemeInfo, list[str]]:
     Plain .json files in the themes folder are read the same way."""
     warnings: list[str] = []
     banner_member = None
+    sound_members: dict[str, str] = {}
     if zipfile.is_zipfile(path):
         with zipfile.ZipFile(path) as zf:
             names = zf.namelist()
@@ -361,6 +496,13 @@ def read_theme_pack(path: Path) -> tuple[ThemeInfo, list[str]]:
                 banner_member = prefix + banner
             elif banner:
                 warnings.append(f"banner {banner!r} not found in pack")
+            sounds_raw = raw.get("sounds") if isinstance(raw, dict) else None
+            for event, member_name in (sounds_raw.items() if isinstance(sounds_raw, dict) else []):
+                if event in SOUND_EVENTS and isinstance(member_name, str) and (prefix + member_name) in names \
+                        and member_name.lower().endswith(".wav"):
+                    sound_members[event] = prefix + member_name
+                else:
+                    warnings.append(f"sound {event!r} skipped")
     else:
         raw = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(raw, dict):
@@ -384,7 +526,8 @@ def read_theme_pack(path: Path) -> tuple[ThemeInfo, list[str]]:
             warnings.append(f"invalid value for {key!r}")
     info = ThemeInfo(name=name, palette=palette, effects=_merge_effects(raw.get("effects"), warnings),
                      author=str(raw.get("author", ""))[:60], description=str(raw.get("description", ""))[:200],
-                     version=str(raw.get("version", ""))[:20], source=path, banner=banner_member)
+                     version=str(raw.get("version", ""))[:20], source=path, banner=banner_member,
+                     sounds=sound_members)
     return info, warnings
 
 
@@ -719,6 +862,46 @@ def _resolve_color(color: Any) -> Any:
     return color
 
 
+def _alive(widget: Any) -> bool:
+    try:
+        return bool(widget.winfo_exists())
+    except Exception:
+        return False
+
+
+class SoundPlayer:
+    """Theme UI sounds through Windows MCI: several sounds can overlap, and they never interrupt
+    other audio the app plays (e.g. the companion's voice)."""
+
+    def __init__(self, root: tk.Misc, log: logging.Logger):
+        self.root = root
+        self.log = log
+        self.enabled = True
+        self.volume = 0.6
+        self.available = IS_WINDOWS
+        self._n = 0
+        self._last: dict[str, float] = {}
+
+    def play(self, path: Path | None, key: str = "") -> None:
+        if not (self.available and self.enabled and path) or self.volume <= 0:
+            return
+        now = time.monotonic()
+        if now - self._last.get(key, 0) < 0.05:  # debounce bursts (double events)
+            return
+        self._last[key] = now
+        try:
+            mci = ctypes.windll.winmm.mciSendStringW
+            self._n = (self._n + 1) % 10000
+            alias = f"mtsnd{self._n}"
+            if mci(f'open "{path}" type mpegvideo alias {alias}', None, 0, None) != 0:
+                return
+            mci(f"setaudio {alias} volume to {int(self.volume * 1000)}", None, 0, None)
+            mci(f"play {alias}", None, 0, None)
+            self.root.after(5000, lambda: mci(f"close {alias}", None, 0, None))
+        except Exception as exc:
+            self.log.debug("sound failed: %s", exc)
+
+
 class ThemeManager:
     """Walks the live widget tree and restyles it from the active palette.
     Runs on every theme switch and on every newly mounted plugin page."""
@@ -734,9 +917,63 @@ class ThemeManager:
         self._listeners: list[tuple[str, Callable[[dict[str, Any]], None]]] = []
         self._fonts: dict[tuple, ctk.CTkFont] = {}
         self._banners: dict[str, Any] = {}
+        self._sound_cache: dict[tuple[str, str], Path | None] = {}
+        self.sound_dir = themes_dir.parent / "cache" / "theme_sounds"
+        self.player = SoundPlayer(root, log)
+        self.player.enabled = bool(settings.get("core", "ui_sounds", True))
+        self.player.volume = float(settings.get("core", "ui_volume", 0.6))
+        self.reduce_motion = bool(settings.get("core", "reduce_motion", False))
         self.reload()
         saved = settings.get("core", "theme", DEFAULT_THEME)
         self.name = saved if saved in self.themes else DEFAULT_THEME
+
+    # ── sounds ────────────────────────────────────────────────────────────
+    def sound_path(self, event: str) -> Path | None:
+        info = self.infos.get(self.name)
+        if info is None:
+            return None
+        if event not in info.sounds or info.source is None:
+            style = info.effects.get("synth_sounds") or ""
+            if not style or event not in SOUND_EVENTS:
+                return None
+            key = ("synth:" + style, event)
+            if key not in self._sound_cache:
+                path = self.sound_dir / f"synth-{re.sub(r'[^a-z0-9]+', '', style.lower()) or 'soft'}" / f"{event}.wav"
+                try:
+                    if not path.exists():
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        tmp = path.with_suffix(".tmp")
+                        tmp.write_bytes(synth_wav(style, event))
+                        os.replace(tmp, path)
+                except Exception as exc:
+                    self.log.warning("Could not make UI sound %s/%s: %s", style, event, exc)
+                    path = None
+                self._sound_cache[key] = path
+            return self._sound_cache[key]
+        key = (self.name, event)
+        if key not in self._sound_cache:
+            path = None
+            try:
+                slug = re.sub(r"[^\w\-]+", "-", self.name).strip("-").lower() or "theme"
+                folder = self.sound_dir / slug
+                folder.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(info.source) as zf:
+                    data = zf.read(info.sounds[event])
+                path = folder / f"{event}.wav"
+                if not path.exists() or path.stat().st_size != len(data):
+                    path.write_bytes(data)
+            except Exception as exc:
+                self.log.warning("Theme sound %s unavailable: %s", event, exc)
+                path = None
+            self._sound_cache[key] = path
+        return self._sound_cache[key]
+
+    def play(self, event: str) -> None:
+        self.player.play(self.sound_path(event), event)
+
+    def has_sounds(self, name: str | None = None) -> bool:
+        info = self.infos.get(name or self.name)
+        return bool(info and (info.sounds or info.effects.get("synth_sounds")))
 
     # ── theme packs ───────────────────────────────────────────────────────
     def reload(self) -> None:
@@ -745,6 +982,8 @@ class ThemeManager:
         self.infos.update(load_theme_packs(self.themes_dir, self.log))
         self.themes = {name: info.palette for name, info in self.infos.items()}
         self._banners.clear()
+        self._sound_cache = {k: v for k, v in getattr(self, "_sound_cache", {}).items()
+                             if k[0] in self.infos or k[0].startswith("synth:")}
         if self.name not in self.themes:
             self.name = DEFAULT_THEME
 
@@ -842,6 +1081,12 @@ class ThemeManager:
         for key, value in options.items():
             setattr(widget, f"_mt_{key}", value)
         return widget
+
+    def scale(self) -> float:
+        try:
+            return float(ctk.ScalingTracker.get_widget_scaling(self._root))
+        except Exception:
+            return 1.0
 
     def font(self, size: int = 13, weight: str = "normal", family: str | None = None,
              mono: bool = False) -> ctk.CTkFont:
@@ -950,6 +1195,7 @@ class ThemeManager:
                             scrollbar_button_hover_color=p["scrollbar_hover"])
             if role == "card":
                 _safe_configure(w, border_color=p["border"], border_width=p["card_border_width"])
+                self._decorate(w, parent_bg)
             return color
 
         if not _is_ctk(w):
@@ -975,6 +1221,8 @@ class ThemeManager:
                 if role == "card":
                     kwargs.update(border_color=p["border"], border_width=p["card_border_width"], **shape)
                 _safe_configure(w, **kwargs)
+                if role == "card" and not getattr(w, "_mt_no_deco", False):
+                    self._decorate(w, parent_bg)
                 return color
             if role == "transparent" or current == "transparent":
                 if current != "transparent":
@@ -994,8 +1242,10 @@ class ThemeManager:
                             text_color=p["text"])
             return p["card"]
 
+        self._apply_body_font(w, role)
         if isinstance(w, ctk.CTkButton):
             self._style_button(w, role, shape)
+            self._bind_click_sound(w, role)
         elif isinstance(w, ctk.CTkLabel):
             _safe_configure(w, text_color=p[LABEL_ROLE_COLORS.get(role, "text")])
             if role == "title":
@@ -1038,10 +1288,154 @@ class ThemeManager:
                             button_hover_color=p["scrollbar_hover"])
         return parent_bg
 
+    # ── decorations: stacked echo panel + HUD corner brackets ───────────────
+    def _decorate(self, w: Any, parent_bg: str) -> None:
+        e, p = self.effects, self.palette
+        echo_px, bracket_px = e["card_echo"], e["corner_brackets"]
+        deco = getattr(w, "_mt_deco", None)
+        if deco is None:
+            if not (echo_px or bracket_px):
+                return
+            deco = {"echo": None, "brackets": []}
+            w._mt_deco = deco
+            target = _container_of(w)
+            try:
+                tk.Misc.bind(target, "<Configure>", lambda _e, w=w: self._sync_echo(w), "+")
+                tk.Misc.bind(target, "<Map>", lambda _e, w=w: self._sync_echo(w), "+")
+                tk.Misc.bind(target, "<Unmap>", lambda _e, w=w: self._hide_echo(w), "+")
+                tk.Misc.bind(target, "<Destroy>", lambda ev, w=w: self._drop_echo(w, ev), "+")
+            except Exception:
+                pass
+        target = _container_of(w)
+        # a plugin may have destroyed our decoration widgets along with its own children
+        if deco["echo"] is not None and not _alive(deco["echo"]):
+            deco["echo"] = None
+        if deco["brackets"] and not all(_alive(f) for f in deco["brackets"]):
+            deco["brackets"] = []
+        if echo_px:
+            color = p.get(e["card_echo_color"], p.get("shadow", p["border"]))
+            if deco["echo"] is None:
+                try:
+                    deco["echo"] = tk.Frame(target.master, bd=0, highlightthickness=1)
+                    deco["echo"]._mt_role = "skip"
+                except Exception:
+                    deco["echo"] = None
+            if deco["echo"] is not None:
+                fill = color if e["card_echo_color"] == "shadow" else parent_bg
+                deco["echo"].configure(bg=fill, highlightbackground=color, highlightcolor=color)
+        elif deco["echo"] is not None:
+            deco["echo"].place_forget()
+        if bracket_px:
+            color = p.get(e["bracket_color"], p["accent"])
+            if not deco["brackets"]:
+                deco["brackets"] = [tk.Frame(target, bd=0, highlightthickness=0) for _ in range(8)]
+                for f in deco["brackets"]:
+                    f._mt_role = "skip"
+            t = 2
+            specs = [(0, 0, "nw", bracket_px, t), (0, 0, "nw", t, bracket_px),
+                     (1, 0, "ne", bracket_px, t), (1, 0, "ne", t, bracket_px),
+                     (0, 1, "sw", bracket_px, t), (0, 1, "sw", t, bracket_px),
+                     (1, 1, "se", bracket_px, t), (1, 1, "se", t, bracket_px)]
+            for frame, (rx, ry, anchor, width, height) in zip(deco["brackets"], specs):
+                frame.configure(bg=color, width=width, height=height)
+                frame.place(relx=rx, rely=ry, anchor=anchor)
+                frame.lift()
+        else:
+            for frame in deco["brackets"]:
+                frame.place_forget()
+        self._sync_echo(w)
+
+    def _sync_echo(self, w: Any) -> None:
+        deco = getattr(w, "_mt_deco", None)
+        echo = deco and deco.get("echo")
+        if not echo:
+            return
+        try:
+            off = self.effects["card_echo"]
+            target = _container_of(w)
+            if off <= 0 or not target.winfo_ismapped():
+                echo.place_forget()
+                return
+            echo.place(x=target.winfo_x() + off, y=target.winfo_y() + off,
+                       width=target.winfo_width(), height=target.winfo_height())
+            echo.lower(target)
+        except Exception:
+            pass
+
+    def _hide_echo(self, w: Any) -> None:
+        deco = getattr(w, "_mt_deco", None)
+        if deco and deco.get("echo") is not None:
+            try:
+                deco["echo"].place_forget()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _drop_echo(w: Any, event: Any) -> None:
+        if getattr(event, "widget", None) is not _container_of(w):
+            return
+        deco = getattr(w, "_mt_deco", None)
+        if deco and deco.get("echo") is not None:
+            try:
+                deco["echo"].destroy()
+            except Exception:
+                pass
+            deco["echo"] = None
+
+    # ── typography & sounds ───────────────────────────────────────────────
+    def _apply_body_font(self, w: Any, role: str | None) -> None:
+        if role in ("title", "nav") or getattr(w, "_mt_keep_font", False):
+            return
+        if not isinstance(w, (ctk.CTkLabel, ctk.CTkButton, ctk.CTkEntry, ctk.CTkTextbox, ctk.CTkOptionMenu,
+                              ctk.CTkCheckBox, ctk.CTkSwitch, ctk.CTkComboBox, ctk.CTkRadioButton)):
+            return
+        family = self.effects["body_font"]
+        try:
+            if family:
+                if not hasattr(w, "_mt_orig_font"):
+                    w._mt_orig_font = w.cget("font")
+                orig = w._mt_orig_font
+                if isinstance(orig, ctk.CTkFont):
+                    size, weight = orig.cget("size"), orig.cget("weight")
+                elif isinstance(orig, (tuple, list)) and len(orig) >= 2:
+                    size, weight = int(orig[1]), ("bold" if "bold" in orig[2:] else "normal")
+                else:
+                    size, weight = 13, "normal"
+                w.configure(font=self.font(int(abs(size)), weight, family=family))
+            elif hasattr(w, "_mt_orig_font"):
+                w.configure(font=w._mt_orig_font)
+                del w._mt_orig_font
+        except Exception:
+            pass
+
+    def _bind_click_sound(self, w: Any, role: str | None) -> None:
+        if role == "nav" or getattr(w, "_mt_sound_bound", False):
+            return
+        w._mt_sound_bound = True
+        try:
+            w.bind("<Button-1>", lambda _e: self.play("click"), add=True)
+        except Exception:
+            pass
+
+    def _nav_indicator(self, w: Any, active: bool) -> None:
+        width = self.effects["nav_indicator"]
+        bar = getattr(w, "_mt_nav_bar", None)
+        if active and width:
+            if bar is None:
+                bar = tk.Frame(w, bd=0, highlightthickness=0)
+                bar._mt_role = "skip"
+                w._mt_nav_bar = bar
+            bar.configure(bg=self.palette["accent"], width=width)
+            bar.place(x=0, rely=0.18, relheight=0.64)
+            bar.lift()
+        elif bar is not None:
+            bar.place_forget()
+
     def _style_button(self, w: Any, role: str | None, shape: dict[str, Any]) -> None:
         p = self.palette
         common = {"text_color_disabled": p["text_muted"], **shape}
         if role == "nav":
+            self._nav_indicator(w, bool(getattr(w, "_mt_active", False)))
             if getattr(w, "_mt_active", False):
                 _safe_configure(w, fg_color=p["nav_active_bg"], hover_color=p["nav_active_bg"],
                                 text_color=p["nav_active_text"], border_color=p["nav_active_border"],
@@ -1110,6 +1504,14 @@ class ThemeHandle:
 
     def apply(self, widget: Any) -> None:
         self._m.apply(widget)
+
+    def play(self, event: str) -> None:
+        """Play a theme UI sound: click, nav, open, success, error, notify, boot (if the theme has one)."""
+        self._m.play(event)
+
+    @property
+    def effects(self) -> dict[str, Any]:
+        return dict(self._m.effects)
 
     def font(self, size: int = 13, weight: str = "normal", family: str | None = None,
              mono: bool = False) -> ctk.CTkFont:
@@ -1379,10 +1781,627 @@ class PluginContext:
     def open_path(self, path: Path | str) -> None:
         self._app.open_path(path)
 
+    def notify(self, title: str, body: str = "", subtitle: str = "", image: Any = None, note: str = "",
+               on_click: Callable[[], Any] | None = None, duration: float = 6.0, icon: str = "") -> None:
+        """Heads-up pop-up in the corner of the screen (styled by the active theme). Thread-safe.
+        image: a PIL image, an image file path or raw image bytes — shown as a round avatar."""
+        self._app.call_in_ui(self._app.notify, title, body, subtitle=subtitle, image=image, note=note,
+                             on_click=on_click, duration=duration, icon=icon, source=self.plugin_id)
+
 
 # ════════════════════════════════════════════════════════════════════════════
 #  Main window
 # ════════════════════════════════════════════════════════════════════════════
+
+TOAST_KEY_COLOR = "#fe01fe"  # made transparent on Windows so layered toasts can have see-through gaps
+
+
+def work_area(root: tk.Misc) -> tuple[int, int, int, int]:
+    """(left, top, right, bottom) of the primary monitor minus the taskbar."""
+    if IS_WINDOWS:
+        try:
+            from ctypes import wintypes
+            rect = wintypes.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(rect), 0):
+                return rect.left, rect.top, rect.right, rect.bottom
+        except Exception:
+            pass
+    return 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+
+
+def round_avatar(image: Any, size: int, ring: str | None = None) -> Any:
+    """PIL image / path / bytes → anti-aliased circular RGBA image (or None)."""
+    try:
+        from PIL import Image, ImageDraw, ImageOps
+        if isinstance(image, (bytes, bytearray)):
+            img = Image.open(io.BytesIO(image))
+        elif isinstance(image, (str, Path)):
+            img = Image.open(image)
+        else:
+            img = image
+        img = ImageOps.fit(img.convert("RGBA"), (size * 4, size * 4), Image.LANCZOS)
+        mask = Image.new("L", img.size, 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, img.size[0] - 1, img.size[1] - 1), fill=255)
+        img.putalpha(mask)
+        if ring:
+            ImageDraw.Draw(img).ellipse((2, 2, img.size[0] - 3, img.size[1] - 3), outline=ring, width=8)
+        return img.resize((size, size), Image.LANCZOS)
+    except Exception:
+        return None
+
+
+class Toast:
+    """One heads-up pop-up: a borderless always-on-top window with the theme's layered card look."""
+
+    def __init__(self, manager: "ToastManager", title: str, body: str, subtitle: str, image: Any,
+                 note: str, on_click: Callable[[], Any] | None, duration: float, icon: str):
+        self.m = manager
+        app = manager.app
+        theme = app.theme
+        p, e = theme.palette, theme.effects
+        scale = theme.scale()
+        px = lambda v: max(1, round(v * scale))  # noqa: E731
+        self.on_click = on_click
+        self.duration = max(2.0, float(duration or 6.0))
+        self.remaining = self.duration
+        self.paused = False
+        self.closed = False
+        self._after: str | None = None
+        self.x = self.y = 0
+        self.target: tuple[int, int] | None = None
+        self.off = px(e["card_echo"]) if e["card_echo"] else 0
+        self.width = px(372)
+        win = self.win = tk.Toplevel(app)
+        win._mt_role = "skip"
+        win.withdraw()
+        win.overrideredirect(True)
+        key = TOAST_KEY_COLOR if IS_WINDOWS else p["bg"]
+        win.configure(bg=key)
+        try:
+            win.attributes("-topmost", True)
+            if IS_WINDOWS:
+                win.attributes("-transparentcolor", TOAST_KEY_COLOR)
+                win.attributes("-toolwindow", True)
+            win.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        font = p["font"]
+        title_font = p.get("title_font") or font
+        body_family = e["body_font"] or font
+        border = p.get("border_strong", p["accent"]) if e["corner_brackets"] else p["border"]
+
+        if self.off:
+            echo_color = p.get(e["card_echo_color"], p.get("shadow", p["border"]))
+            fill = echo_color if e["card_echo_color"] == "shadow" else key
+            self.echo = tk.Frame(win, bg=fill, bd=0, highlightthickness=px(1),
+                                 highlightbackground=echo_color, highlightcolor=echo_color)
+        else:
+            self.echo = None
+        card = self.card = tk.Frame(win, bg=p["card"], bd=0, highlightthickness=px(1),
+                                    highlightbackground=border, highlightcolor=border, cursor="hand2")
+        tk.Frame(card, bg=p["accent"], width=px(3), bd=0).pack(side="left", fill="y")
+        inner = tk.Frame(card, bg=p["card"], bd=0)
+        inner.pack(side="left", fill="both", expand=True, padx=(px(12), px(10)), pady=px(11))
+        inner.grid_columnconfigure(1, weight=1)
+
+        self._photo = None
+        avatar = round_avatar(image, px(46), ring=p["accent"]) if image is not None else None
+        if avatar is not None:
+            try:
+                from PIL import ImageTk
+                self._photo = ImageTk.PhotoImage(avatar, master=win)
+            except Exception:
+                self._photo = None
+        if self._photo is not None:
+            pic = tk.Label(inner, image=self._photo, bg=p["card"], bd=0)
+        else:
+            letter = (icon or (title.strip()[:1] or "•")).upper()
+            pic = tk.Label(inner, text=letter, bg=p["selected"], fg="#ffffff", width=3, height=1,
+                           font=(title_font, -px(18), "bold"))
+        pic.grid(row=0, column=0, rowspan=4, sticky="n", padx=(0, px(12)))
+
+        head = tk.Frame(inner, bg=p["card"], bd=0)
+        head.grid(row=0, column=1, sticky="ew")
+        head.grid_columnconfigure(0, weight=1)
+        tk.Label(head, text=title[:80], bg=p["card"], fg=p["title"], anchor="w",
+                 font=(title_font, -px(15), "bold")).grid(row=0, column=0, sticky="ew")
+        tk.Label(head, text="now", bg=p["card"], fg=p["text_muted"],
+                 font=(body_family, -px(11))).grid(row=0, column=1, sticky="e", padx=(px(8), px(4)))
+        close = tk.Label(head, text="✕", bg=p["card"], fg=p["text_muted"], cursor="hand2",
+                         font=(font, -px(13)))
+        close.grid(row=0, column=2, sticky="e")
+        close.bind("<Button-1>", lambda _e: (self.close(), "break")[1])
+        wrap = self.width - px(46) - px(12) - px(28)
+        row = 1
+        if subtitle:
+            tk.Label(inner, text=subtitle[:120], bg=p["card"], fg=p["accent"], anchor="w", justify="left",
+                     font=(body_family, -px(11), "bold"), wraplength=wrap).grid(row=row, column=1, sticky="ew")
+            row += 1
+        if body:
+            text = body if len(body) <= 400 else body[:399] + "…"
+            tk.Label(inner, text=text, bg=p["card"], fg=p["text"], anchor="w", justify="left",
+                     font=(body_family, -px(13)), wraplength=wrap).grid(row=row, column=1, sticky="ew",
+                                                                         pady=(px(3), 0))
+            row += 1
+        if note:
+            box = tk.Frame(inner, bg=p["entry_bg"], bd=0, highlightthickness=0)
+            box.grid(row=row, column=1, sticky="ew", pady=(px(7), 0))
+            tk.Frame(box, bg=p["accent2"], width=px(2)).pack(side="left", fill="y")
+            tk.Label(box, text=f"NOTE  {note[:200]}", bg=p["entry_bg"], fg=p["accent2"], anchor="w",
+                     justify="left", font=(body_family, -px(11)), wraplength=wrap - px(14)).pack(
+                side="left", fill="x", padx=px(6), pady=px(3))
+            row += 1
+        self.bar = tk.Frame(card, bg=p["accent"], height=px(2), bd=0)
+
+        if e["corner_brackets"]:
+            c = p.get(e["bracket_color"], p["accent"])
+            size = px(10)
+            for rx, ry, anchor in ((0, 0, "nw"), (1, 0, "ne"), (0, 1, "sw"), (1, 1, "se")):
+                tk.Frame(card, bg=c, width=size, height=px(2)).place(relx=rx, rely=ry, anchor=anchor)
+                tk.Frame(card, bg=c, width=px(2), height=size).place(relx=rx, rely=ry, anchor=anchor)
+
+        win.update_idletasks()
+        self.height = card.winfo_reqheight() or px(96)
+        card.place(x=0, y=0, width=self.width, height=self.height)
+        if self.echo is not None:
+            self.echo.place(x=self.off, y=self.off, width=self.width, height=self.height)
+            self.echo.lower(card)
+        self.bar.place(x=0, rely=1.0, y=-px(2), relwidth=1)
+        self.full_w, self.full_h = self.width + self.off, self.height + self.off
+
+        def bind_all(widget: Any) -> None:
+            if widget is not close:
+                widget.bind("<Button-1>", self._clicked, add="+")
+            widget.bind("<Enter>", lambda _e: self._pause(True), add="+")
+            widget.bind("<Leave>", lambda _e: self._pause(False), add="+")
+            for child in widget.winfo_children():
+                bind_all(child)
+        bind_all(win)
+
+    def _clicked(self, _event: Any = None) -> None:
+        callback = self.on_click
+        self.close()
+        if callback is not None:
+            try:
+                callback()
+            except Exception:
+                self.m.app.log.exception("Toast click handler failed")
+
+    def _pause(self, paused: bool) -> None:
+        self.paused = paused
+
+    def show_at(self, x: int, y: int, animate: bool) -> None:
+        self.target = (x, y)
+        if not self.win.winfo_ismapped() and not self.closed:
+            start_x = x + (self.full_w + 30 if animate else 0)
+            self.x, self.y = start_x, y
+            self.win.geometry(f"{self.full_w}x{self.full_h}+{start_x}+{y}")
+            self.win.deiconify()
+            self.win.lift()
+            self._step(0, animate)
+            self._after = self.win.after(100, self._countdown)
+        else:
+            self._step(0, animate)
+
+    def _step(self, frame: int, animate: bool) -> None:
+        if self.closed or self.target is None:
+            return
+        tx, ty = self.target
+        if not animate:
+            self.x, self.y = tx, ty
+        else:
+            self.x += round((tx - self.x) * 0.35) or (tx - self.x)
+            self.y += round((ty - self.y) * 0.35) or (ty - self.y)
+        try:
+            self.win.geometry(f"+{self.x}+{self.y}")
+            alpha = 0.97 if not animate else min(0.97, 0.25 + frame * 0.12)
+            self.win.attributes("-alpha", alpha)
+        except Exception:
+            return
+        if (self.x, self.y) != (tx, ty) or (animate and frame < 7):
+            self.win.after(16, self._step, frame + 1, animate)
+
+    def _countdown(self) -> None:
+        if self.closed:
+            return
+        if not self.paused:
+            self.remaining -= 0.1
+            try:
+                self.bar.place_configure(relwidth=max(0.0, self.remaining / self.duration))
+            except Exception:
+                pass
+        if self.remaining <= 0:
+            self.close()
+            return
+        self._after = self.win.after(100, self._countdown)
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+        self.m.closed(self)
+
+
+class ToastManager:
+    MAX_VISIBLE = 4
+
+    def __init__(self, app: "App"):
+        self.app = app
+        self.toasts: list[Toast] = []
+
+    def show(self, title: str, body: str = "", subtitle: str = "", image: Any = None, note: str = "",
+             on_click: Callable[[], Any] | None = None, duration: float = 6.0, icon: str = "") -> Toast | None:
+        if not self.app.settings.get("core", "toasts", True):
+            return None
+        try:
+            toast = Toast(self, title, body, subtitle, image, note, on_click, duration, icon)
+        except Exception:
+            self.app.log.exception("Could not show notification")
+            return None
+        self.toasts.insert(0, toast)
+        for old in self.toasts[self.MAX_VISIBLE:]:
+            old.close()
+        self.layout()
+        self.app.theme.play("notify")
+        return toast
+
+    def closed(self, toast: Toast) -> None:
+        if toast in self.toasts:
+            self.toasts.remove(toast)
+            self.layout()
+
+    def layout(self) -> None:
+        left, top, right, bottom = work_area(self.app)
+        scale = self.app.theme.scale()
+        margin, gap = round(16 * scale), round(10 * scale)
+        animate = not self.app.theme.reduce_motion
+        corner = self.app.settings.get("core", "toast_corner", "top-right")
+        y = top + margin if corner == "top-right" else bottom - margin
+        for toast in list(self.toasts):
+            x = right - margin - toast.full_w
+            if corner == "top-right":
+                toast.show_at(x, y, animate)
+                y += toast.full_h + gap
+            else:
+                y -= toast.full_h
+                toast.show_at(x, y, animate)
+                y -= gap
+
+    def close_all(self) -> None:
+        for toast in list(self.toasts):
+            toast.close()
+
+
+# ── in-app updates ──────────────────────────────────────────────────────────
+UPDATE_REPO_DEFAULT = "4sxnly/multi-tool"
+UPDATE_BRANCH_DEFAULT = "main"
+# repo paths that only change by rebuilding the installer (embedded Python, libraries, engines)
+INSTALLER_PATHS = ("requirements.txt", "launcher.py", "build/", ".github/workflows/", "assets/")
+
+
+def git_blob_sha(data: bytes) -> str:
+    import hashlib
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+@dataclass
+class UpdateItem:
+    path: str          # path in the repo
+    sha: str           # git blob sha
+    dest: Path
+    kind: str          # core | plugin | theme | character
+    new: bool = False
+
+
+@dataclass
+class UpdateCheck:
+    items: list[UpdateItem] = field(default_factory=list)
+    installer_needed: bool = False
+    installer_url: str | None = None
+    installer_name: str = ""
+    installer_build: int | None = None
+    message: str = ""
+
+    def summary(self) -> str:
+        if not self.items and not self.installer_needed:
+            return "You're up to date."
+        parts = []
+        counts: dict[str, int] = {}
+        for item in self.items:
+            counts[item.kind] = counts.get(item.kind, 0) + 1
+        names = {"core": "app core", "plugin": "plugin file", "theme": "theme", "character": "character"}
+        for kind in ("core", "plugin", "theme", "character"):
+            n = counts.get(kind, 0)
+            if n:
+                parts.append(names[kind] if kind == "core" else f"{n} {names[kind]}{'s' if n != 1 else ''}")
+        text = ("Updates ready: " + ", ".join(parts) + ".") if parts else ""
+        if self.installer_needed:
+            extra = ("A new full installer is available (bundled engines/libraries changed)."
+                     if self.installer_url else
+                     "The bundled engines/libraries changed — a new installer is still being built. "
+                     "Check again in a few minutes.")
+            text = (text + " " + extra).strip()
+        return text
+
+
+class UpdateManager:
+    """Keeps plugins, themes, characters and the app core in sync with the GitHub repo, without rebuilding
+    the installer. Only files that changed are downloaded (compared by git blob hash)."""
+
+    def __init__(self, paths: AppPaths, settings: "SettingsStore", log: logging.Logger):
+        self.paths = paths
+        self.settings = settings
+        self.log = log
+        self.info: dict[str, Any] = {}
+        try:
+            self.info = json.loads((paths.app_dir / "build_info.json").read_text(encoding="utf-8-sig"))
+        except Exception:
+            self.info = {}
+        self.repo = (settings.get("core", "update_repo", "") or self.info.get("repo") or UPDATE_REPO_DEFAULT)
+        self.branch = self.info.get("branch") or UPDATE_BRANCH_DEFAULT
+        self.api = os.environ.get("MT_GH_API", "https://api.github.com").rstrip("/")
+        self.raw = os.environ.get("MT_GH_RAW", "https://raw.githubusercontent.com").rstrip("/")
+        self.state_file = paths.data_dir / "update_state.json"
+        self.last: UpdateCheck | None = None
+        self.busy = False
+
+    @property
+    def enabled(self) -> bool:
+        return IS_FROZEN or bool(os.environ.get("MT_UPDATE_DEV"))
+
+    @property
+    def build(self) -> int:
+        try:
+            return int(self.info.get("build") or 0)
+        except Exception:
+            return 0
+
+    def _get(self, url: str, accept: str = "application/vnd.github+json") -> bytes:
+        import urllib.request
+        request = urllib.request.Request(url, headers={"User-Agent": f"{APP_ID}/{APP_VERSION}", "Accept": accept})
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read()
+
+    def _state(self) -> dict[str, Any]:
+        try:
+            return json.loads(self.state_file.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _map(self, path: str) -> tuple[Path, str] | None:
+        parts = path.split("/")
+        if any(part in ("", ".", "..") for part in parts) or "\\" in path or ":" in path:
+            return None
+        if path == "main.py":
+            return self.paths.app_dir / "core" / "main.py", "core"
+        if parts[0] == "plugins" and len(parts) >= 2 and "__pycache__" not in parts:
+            return self.paths.plugins_dir.joinpath(*parts[1:]), "plugin"
+        if parts[:2] == ["extras", "themes"] and len(parts) == 3 and path.endswith(".mttheme"):
+            return self.paths.themes_dir / parts[2], "theme"
+        if parts[:2] == ["extras", "characters"] and len(parts) == 3 and path.endswith(".mtchar"):
+            return self.paths.app_dir / "extras" / "characters" / parts[2], "character"
+        return None
+
+    @staticmethod
+    def _same(dest: Path, sha: str) -> bool:
+        try:
+            data = dest.read_bytes()
+        except OSError:
+            return False
+        if git_blob_sha(data) == sha:
+            return True
+        return git_blob_sha(data.replace(b"\r\n", b"\n")) == sha  # a copy that got CRLF line endings
+
+    def check(self) -> UpdateCheck:
+        tree = json.loads(self._get(f"{self.api}/repos/{self.repo}/git/trees/{self.branch}?recursive=1"))
+        blobs = {e["path"]: e["sha"] for e in tree.get("tree", []) if e.get("type") == "blob"}
+        if not blobs:
+            raise RuntimeError("the repository listing came back empty")
+        shipped: dict[str, str] = self.info.get("files") or {}
+        known = set(shipped) | set(self._state().get("known", []))
+        result = UpdateCheck()
+        for path, sha in sorted(blobs.items()):
+            mapped = self._map(path)
+            if mapped is None:
+                continue
+            dest, kind = mapped
+            if dest.exists():
+                if self._same(dest, sha):
+                    continue
+                result.items.append(UpdateItem(path, sha, dest, kind))
+            elif path not in known:  # brand-new file in the repo (removed/unselected ones stay removed)
+                result.items.append(UpdateItem(path, sha, dest, kind, new=True))
+        if shipped:
+            for path, sha in blobs.items():
+                if path.startswith(INSTALLER_PATHS) and shipped.get(path) != sha:
+                    result.installer_needed = True
+                    self.log.info("Installer-level change: %s", path)
+                    break
+        if result.installer_needed:
+            try:
+                release = json.loads(self._get(f"{self.api}/repos/{self.repo}/releases/latest"))
+                match = re.search(r"(\d+)$", release.get("tag_name", ""))
+                number = int(match.group(1)) if match else 0
+                asset = next((a for a in release.get("assets", []) if a.get("name", "").lower().endswith(".exe")),
+                             None)
+                if asset and number > self.build:
+                    result.installer_url = asset["browser_download_url"]
+                    result.installer_name = asset["name"]
+                    result.installer_build = number
+            except Exception as exc:
+                self.log.warning("Could not read the latest release: %s", exc)
+        result.message = result.summary()
+        self.last = result
+        return result
+
+    def apply(self, check: UpdateCheck, progress: Callable[[str], None] = lambda _t: None) -> dict[str, int]:
+        import urllib.parse
+        done: dict[str, int] = {}
+        for i, item in enumerate(check.items, start=1):
+            progress(f"Downloading {item.path} ({i}/{len(check.items)})")
+            url = f"{self.raw}/{self.repo}/{self.branch}/{urllib.parse.quote(item.path)}"
+            data = b""
+            for _attempt in range(2):
+                data = self._get(url, accept="*/*")
+                if git_blob_sha(data) == item.sha:
+                    break
+            else:
+                raise RuntimeError(f"{item.path} didn't match the expected file — try again in a minute")
+            item.dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = item.dest.with_name(item.dest.name + ".mtupdate")
+            tmp.write_bytes(data)
+            os.replace(tmp, item.dest)
+            done[item.kind] = done.get(item.kind, 0) + 1
+            self.log.info("Updated %s -> %s", item.path, item.dest)
+        state = self._state()
+        known = set(state.get("known", [])) | {item.path for item in check.items}
+        state["known"] = sorted(known)
+        state["last_update"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        tmp = self.state_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        os.replace(tmp, self.state_file)
+        check.items = []
+        return done
+
+    def download_installer(self, check: UpdateCheck, progress: Callable[[str], None]) -> Path:
+        import urllib.request
+        assert check.installer_url
+        folder = self.paths.data_dir / "cache" / "installer"
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / (check.installer_name or "MultiTool-Setup.exe")
+        request = urllib.request.Request(check.installer_url, headers={"User-Agent": f"{APP_ID}/{APP_VERSION}"})
+        with urllib.request.urlopen(request, timeout=60) as response, open(target.with_suffix(".part"), "wb") as fh:
+            total = int(response.headers.get("Content-Length") or 0)
+            got = 0
+            while True:
+                chunk = response.read(1 << 16)
+                if not chunk:
+                    break
+                fh.write(chunk)
+                got += len(chunk)
+                if total:
+                    progress(f"Downloading installer… {got * 100 // total}%")
+        os.replace(target.with_suffix(".part"), target)
+        return target
+
+
+class TitleCanvas(tk.Canvas):
+    """Page title drawn on a canvas so a theme can give it an offset 'chromatic' shadow and a pixel-exact
+    size. Accepts configure(text=..., text_color=...) like a CTkLabel."""
+
+    def __init__(self, master: Any, theme: "ThemeManager"):
+        super().__init__(master, height=38, bd=0, highlightthickness=0)
+        self._theme = theme
+        self._text = ""
+        self._color = "#ffffff"
+        self._shadow_override: str | None = None
+        tk.Misc.bind(self, "<Configure>", lambda _e: self._draw(), "+")
+
+    def configure(self, cnf: Any = None, **kw: Any) -> Any:
+        changed = False
+        if "text" in kw:
+            self._text = str(kw.pop("text"))
+            changed = True
+        if "text_color" in kw:
+            self._color = kw.pop("text_color")
+            changed = True
+        if "shadow" in kw:
+            self._shadow_override = kw.pop("shadow")
+            changed = True
+        result = super().configure(cnf, **kw) if (cnf or kw) else None
+        if changed or "bg" in kw or "background" in kw:
+            self._draw()
+        return result
+
+    config = configure
+
+    def cget(self, key: str) -> Any:
+        if key == "text":
+            return self._text
+        if key == "text_color":
+            return self._color
+        return super().cget(key)
+
+    def _draw(self) -> None:
+        try:
+            e, p = self._theme.effects, self._theme.palette
+            scale = self._theme.scale()
+            size = e["title_size"]
+            font = (p.get("title_font") or p["font"], -round(size * scale), "bold")
+            height = round(size * 1.5 * scale)
+            if int(float(super().cget("height"))) != height:
+                super().configure(height=height)
+            self.delete("all")
+            y = height // 2
+            shadow = self._shadow_override if self._shadow_override is not None else e["title_shadow"]
+            if shadow:
+                color = p.get(shadow, shadow) if not str(shadow).startswith("#") else shadow
+                off = max(2, round(3 * scale))
+                self.create_text(off, y + off // 2, text=self._text, anchor="w", font=font, fill=color)
+            self.create_text(0, y, text=self._text, anchor="w", font=font, fill=self._color)
+        except Exception:
+            pass
+
+
+class Telemetry:
+    """Real CPU / memory figures for the status bar (Windows; elsewhere returns None)."""
+
+    def __init__(self) -> None:
+        self._last: tuple[int, int] | None = None
+
+    @staticmethod
+    def _ft(ft: Any) -> int:
+        return (ft.dwHighDateTime << 32) | ft.dwLowDateTime
+
+    def cpu(self) -> int | None:
+        if not IS_WINDOWS:
+            return None
+        try:
+            from ctypes import wintypes
+            idle, kernel, user = wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME()
+            if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel),
+                                                         ctypes.byref(user)):
+                return None
+            i, total = self._ft(idle), self._ft(kernel) + self._ft(user)
+            last, self._last = self._last, (i, total)
+            if last is None or total == last[1]:
+                return None
+            return max(0, min(100, round(100 * (1 - (i - last[0]) / (total - last[1])))))
+        except Exception:
+            return None
+
+    @staticmethod
+    def memory() -> int | None:
+        if not IS_WINDOWS:
+            return None
+        try:
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(stat)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+            return int(stat.dwMemoryLoad)
+        except Exception:
+            return None
+
+
+DEFAULT_BOOT_LINES = [
+    "MULTI-TOOL BIOS v{version}",
+    "> mounting /plugins ........ {plugins} modules",
+    "> linking bundled engines ... ok",
+    "> theme driver .............. {theme}",
+    "> handshake ................. ok",
+    "SYSTEM READY",
+]
+
 
 class App(ctk.CTk, _DnDBase):
     def __init__(self, paths: AppPaths, log: logging.Logger):
@@ -1402,7 +2421,18 @@ class App(ctk.CTk, _DnDBase):
         self._raw_title = ""
         self._default_tagline = "Desktop Utility Belt"
         self._glitch_after: str | None = None
+        self._decrypt_after: str | None = None
+        self._sweep_after: str | None = None
+        self._ticker_after: str | None = None
         self._banner_image: Any = None
+        self._status_text = "Ready"
+        self._cursor_on = True
+        self._tick_n = 0
+        self._telemetry = Telemetry()
+        self._boot_overlay: Any = None
+        self._booting = False
+        self.toasts = ToastManager(self)
+        self.updater = UpdateManager(paths, self.settings, log)
 
         self.records: list[PluginRecord] = []
         self._pages: dict[str, Any] = {}
@@ -1427,6 +2457,9 @@ class App(ctk.CTk, _DnDBase):
 
         self.bind("<Control-R>", lambda _e: self.reload_plugins())  # Ctrl+Shift+R
         self.after(20, self._pump_ui_queue)
+        self.after(500, self._tick)
+        self.after(60, self._maybe_boot)
+        self.after(25_000, self._auto_update_check)
         loaded = sum(1 for r in self.records if r.instance is not None)
         failed = sum(1 for r in self.records if r.error)
         self.set_status(f"{loaded} plugin(s) loaded" + (f", {failed} failed" if failed else ""),
@@ -1531,12 +2564,16 @@ class App(ctk.CTk, _DnDBase):
         main.grid_rowconfigure(2, weight=1)
 
         header = tag(ctk.CTkFrame(main, fg_color="transparent"), "transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=26, pady=(20, 10))
+        header.grid(row=0, column=0, sticky="ew", padx=26, pady=(18, 10))
         header.grid_columnconfigure(0, weight=1)
-        self._page_title = tag(ctk.CTkLabel(header, text="", anchor="w"), "title", font_size=24)
-        self._page_title.grid(row=0, column=0, sticky="ew")
+        self._kicker = tag(ctk.CTkLabel(header, text="", anchor="w", height=16,
+                                        font=self.theme.font(11, "bold", mono=True)), "accent", keep_font=True)
+        self._page_title = tag(TitleCanvas(header, self.theme), "transparent")
+        self._page_title.grid(row=1, column=0, sticky="ew")
         self._page_desc = tag(ctk.CTkLabel(header, text="", anchor="w", justify="left"), "muted")
-        self._page_desc.grid(row=1, column=0, sticky="ew")
+        self._page_desc.grid(row=2, column=0, sticky="ew")
+        self._ticker = tag(ctk.CTkLabel(header, text="", anchor="e", justify="right", height=16,
+                                        font=self.theme.font(10, mono=True)), "muted", keep_font=True)
         header.bind("<Configure>", lambda e: self._page_desc.configure(wraplength=max(240, e.width - 20)))
 
         divider = tag(ctk.CTkFrame(main, height=1, corner_radius=0, border_width=0), "skip")
@@ -1547,15 +2584,21 @@ class App(ctk.CTk, _DnDBase):
         self.viewport.grid(row=2, column=0, sticky="nsew", padx=26, pady=16)
         self.viewport.grid_columnconfigure(0, weight=1)
         self.viewport.grid_rowconfigure(0, weight=1)
+        self._sweep = tk.Frame(self.viewport, height=2, bd=0, highlightthickness=0)
+        self._sweep._mt_role = "skip"
 
         status = tag(ctk.CTkFrame(main, height=30, corner_radius=0), "statusbar", keep_shape=True)
         status.grid(row=3, column=0, sticky="ew")
         status.grid_columnconfigure(0, weight=1)
         self._status_label = tag(ctk.CTkLabel(status, text="Ready", anchor="w", height=26), "muted")
         self._status_label.grid(row=0, column=0, sticky="ew", padx=14)
+        self._telemetry_label = tag(ctk.CTkLabel(status, text="", anchor="e", height=26,
+                                                 font=self.theme.font(11, mono=True)), "muted", keep_font=True)
+        self._clock_label = tag(ctk.CTkLabel(status, text="", anchor="e", height=26,
+                                             font=self.theme.font(11, "bold", mono=True)), "accent", keep_font=True)
         dnd_text = "Drag & drop ready" if self.dnd_available else "Drag & drop unavailable"
         tag(ctk.CTkLabel(status, text=dnd_text, anchor="e", height=26),
-            "muted" if self.dnd_available else "warning").grid(row=0, column=1, sticky="e", padx=14)
+            "muted" if self.dnd_available else "warning").grid(row=0, column=3, sticky="e", padx=14)
 
     def _make_nav_button(self, parent: Any, key: str, icon: str, title: str) -> Any:
         btn = ctk.CTkButton(parent, text=f"{icon}   {title}", anchor="w", height=36,
@@ -1617,9 +2660,234 @@ class App(ctk.CTk, _DnDBase):
             self._stripe.grid_remove()
         # titles, nav, glitch
         self._page_title.configure(text=self._rendered_title(), text_color=p["title"])
+        self._update_kicker()
+        motion = not self.theme.reduce_motion
+        if e["hex_ticker"] and motion:
+            self._ticker.grid(row=0, column=1, rowspan=2, sticky="ne", padx=(12, 0))
+        else:
+            self._ticker.grid_remove()
+        self._sweep.configure(bg=p["accent"])
+        if e["status_telemetry"]:
+            self._telemetry_label.grid(row=0, column=1, sticky="e", padx=(0, 6))
+        else:
+            self._telemetry_label.grid_remove()
+        if e["status_clock"]:
+            self._clock_label.grid(row=0, column=2, sticky="e", padx=(6, 0))
+        else:
+            self._clock_label.grid_remove()
         for btn in self._nav_buttons.values():
             self._render_nav_text(btn)
+        self._render_status()
         self._schedule_glitch()
+        self._schedule_ticker()
+
+    # kicker ("MODULE_03 // ONLINE"), hex ticker, decrypt reveal, scan sweep, boot, status ticks
+    def _page_state(self, key: str | None) -> tuple[int, str]:
+        visible = self._visible_records()
+        keys = [r.key for r in visible]
+        if key == SETTINGS_KEY:
+            return len(keys) + 1, "CONFIG"
+        rec = self._record(key) if key else None
+        index = keys.index(key) + 1 if key in keys else 0
+        if rec is None:
+            return index, "IDLE"
+        return index, "FAULT" if rec.error else ("ONLINE" if rec.instance is not None else "OFFLINE")
+
+    def _update_kicker(self) -> None:
+        fmt = self.theme.effects["kicker"]
+        if not fmt or self._active_key is None:
+            self._kicker.grid_remove()
+            return
+        index, state = self._page_state(self._active_key)
+        try:
+            text = fmt.format(index=index, key=self._active_key, state=state, title=self._raw_title)
+        except Exception:
+            text = fmt
+        self._kicker.configure(text=text)
+        self._kicker.grid(row=0, column=0, sticky="ew")
+
+    def _schedule_ticker(self) -> None:
+        if self._ticker_after is not None:
+            try:
+                self.after_cancel(self._ticker_after)
+            except Exception:
+                pass
+            self._ticker_after = None
+        if self.theme.effects["hex_ticker"] and not self.theme.reduce_motion and not self._closing:
+            self._ticker_after = self.after(140, self._ticker_step)
+
+    def _ticker_step(self) -> None:
+        self._ticker_after = None
+        if self._closing:
+            return
+        rows = []
+        for _ in range(2):
+            rows.append(f"0x{random.getrandbits(16):04X}  " + " ".join(f"{random.getrandbits(8):02X}" for _ in range(6)))
+        self._ticker.configure(text="\n".join(rows))
+        self._schedule_ticker()
+
+    DECRYPT_CHARS = "ABCDEF0123456789#$%&@*+=<>/\\|"
+
+    def _start_decrypt(self) -> None:
+        if self._decrypt_after is not None:
+            try:
+                self.after_cancel(self._decrypt_after)
+            except Exception:
+                pass
+            self._decrypt_after = None
+        if self.theme.effects["title_decrypt"] and not self.theme.reduce_motion and self._rendered_title():
+            self._decrypt_step(0)
+
+    def _decrypt_step(self, frame: int) -> None:
+        self._decrypt_after = None
+        base = self._rendered_title()
+        frames = 12
+        if self._closing or frame >= frames or not base:
+            self._page_title.configure(text=base, text_color=self.theme.palette["title"])
+            return
+        revealed = int(len(base) * frame / frames)
+        text = base[:revealed] + "".join(c if c.isspace() else random.choice(self.DECRYPT_CHARS)
+                                         for c in base[revealed:])
+        color = self.theme.palette["accent"] if frame % 3 else self.theme.palette["accent2"]
+        self._page_title.configure(text=text, text_color=color)
+        self._decrypt_after = self.after(28, self._decrypt_step, frame + 1)
+
+    def _start_sweep(self) -> None:
+        if not self.theme.effects["scan_sweep"] or self.theme.reduce_motion:
+            return
+        if self._sweep_after is not None:
+            try:
+                self.after_cancel(self._sweep_after)
+            except Exception:
+                pass
+        self._sweep_step(0)
+
+    def _sweep_step(self, frame: int) -> None:
+        self._sweep_after = None
+        steps = 16
+        try:
+            height = self.viewport.winfo_height()
+            if self._closing or frame > steps or height < 10:
+                self._sweep.place_forget()
+                return
+            self._sweep.place(x=0, y=int((height - 2) * frame / steps), relwidth=1)
+            self._sweep.lift()
+            self._sweep_after = self.after(18, self._sweep_step, frame + 1)
+        except Exception:
+            pass
+
+    def _maybe_boot(self) -> None:
+        e, p = self.theme.effects, self.theme.palette
+        if self._booting or (not e["boot_sequence"] or self.theme.reduce_motion
+                or not self.settings.get("core", "boot_anim", True)):
+            return
+        lines = list(e["boot_lines"] or DEFAULT_BOOT_LINES)
+        values = {"version": APP_VERSION, "theme": self.theme.name,
+                  "plugins": sum(1 for r in self.records if r.instance is not None)}
+        lines = [self._safe_format(line, values) for line in lines][:16]
+        overlay = tk.Frame(self, bg=p["bg"], bd=0, highlightthickness=0, cursor="hand2")
+        overlay._mt_role = "skip"
+        overlay.place(x=0, y=0, relwidth=1, relheight=1)
+        overlay.lift()
+        family = p["mono_font"]
+        scale = self.theme.scale()
+        text = tk.Text(overlay, bg=p["bg"], fg=p["accent"], bd=0, highlightthickness=0, wrap="none",
+                       font=(family, -round(15 * scale)), cursor="hand2", insertwidth=0)
+        text._mt_role = "skip"
+        text.tag_configure("dim", foreground=p["text_muted"])
+        text.tag_configure("hot", foreground=p["accent2"])
+        text.place(relx=0.5, rely=0.45, anchor="center", relwidth=0.62, relheight=0.5)
+        bar = tk.Frame(overlay, bg=p["border"], height=3, bd=0)
+        bar.place(relx=0.19, rely=0.73, relwidth=0.62)
+        fill = tk.Frame(bar, bg=p["accent"], height=3, bd=0)
+        hint = tk.Label(overlay, text="click to skip", bg=p["bg"], fg=p["text_muted"],
+                        font=(family, -round(11 * scale)))
+        hint.place(relx=0.5, rely=0.78, anchor="n")
+        self._boot_overlay = overlay
+        self._booting = True
+        for widget in (overlay, text, hint, bar):
+            widget.bind("<Button-1>", lambda _e: self._end_boot())
+        self.bind("<Key>", lambda _e: self._end_boot(), add="+")
+        self.theme.play("boot")
+        total = sum(len(line) for line in lines) or 1
+        state = {"line": 0, "col": 0, "done": 0}
+
+        def step() -> None:
+            if not self._booting or self._closing:
+                return
+            if state["line"] >= len(lines):
+                self.after(380, self._end_boot)
+                return
+            line = lines[state["line"]]
+            chunk = line[state["col"]:state["col"] + 4]
+            tag_name = "hot" if state["line"] == len(lines) - 1 else ("dim" if line.startswith(">") else "")
+            text.insert("end", chunk, tag_name)
+            state["col"] += len(chunk)
+            state["done"] += len(chunk)
+            fill.place(x=0, y=0, relheight=1, relwidth=min(1.0, state["done"] / total))
+            if state["col"] >= len(line):
+                text.insert("end", "\n")
+                state["line"] += 1
+                state["col"] = 0
+                self.after(70, step)
+            else:
+                self.after(12, step)
+
+        step()
+
+    @staticmethod
+    def _safe_format(line: str, values: dict[str, Any]) -> str:
+        try:
+            return str(line).format(**values)
+        except Exception:
+            return str(line)
+
+    def _end_boot(self) -> None:
+        if not self._booting:
+            return
+        self._booting = False
+        overlay, self._boot_overlay = self._boot_overlay, None
+        if overlay is not None:
+            try:
+                overlay.destroy()
+            except Exception:
+                pass
+        self._start_decrypt()
+        self._start_sweep()
+
+    def _tick(self) -> None:
+        if self._closing:
+            return
+        e = self.theme.effects
+        self._tick_n += 1
+        try:
+            if e["status_clock"]:
+                self._clock_label.configure(text=time.strftime("%H:%M:%S"))
+            if e["status_telemetry"] and self._tick_n % 4 == 1:
+                cpu, mem = self._telemetry.cpu(), self._telemetry.memory()
+                parts = []
+                if cpu is not None:
+                    parts.append(f"CPU {cpu:>3d}%")
+                if mem is not None:
+                    parts.append(f"MEM {mem:>3d}%")
+                self._telemetry_label.configure(text="   ".join(parts) + ("   │" if parts else ""))
+            if e["blink_cursor"] and not self.theme.reduce_motion:
+                self._cursor_on = not self._cursor_on
+                self._render_status()
+        except Exception:
+            pass
+        self.after(500, self._tick)
+
+    def _render_status(self) -> None:
+        e = self.theme.effects
+        text = e["status_prefix"] + self._status_text
+        text = text[:300] + ("…" if len(text) > 300 else "")
+        if e["blink_cursor"]:
+            text += " █" if (self._cursor_on or self.theme.reduce_motion) else "  "
+        try:
+            self._status_label.configure(text=text)
+        except Exception:
+            pass
 
     GLITCH_CHARS = "▓▒░█#@%&/\\<>[]=+*01"
 
@@ -1825,8 +3093,14 @@ class App(ctk.CTk, _DnDBase):
         else:
             title, desc = "", ""
         self._raw_title = title
-        self._page_title.configure(text=self._rendered_title())
+        self._page_title.configure(text=self._rendered_title(), text_color=self.theme.palette["title"])
         self._page_desc.configure(text=desc)
+        self._update_kicker()
+        if old_key is not None:
+            self.theme.play("nav")
+        if not self._booting:
+            self._start_decrypt()
+            self._start_sweep()
 
         for k, btn in self._nav_buttons.items():
             active = k == key
@@ -1909,8 +3183,19 @@ class App(ctk.CTk, _DnDBase):
         for i, name in enumerate(self.theme.names(), start=1):
             self._theme_row(body, i, self.theme.info(name))
 
+        # Updates
+        body = self._card(page, 5, "Updates",
+                          "New and changed plugins, themes and characters arrive straight from GitHub. "
+                          "A full installer is only needed when the bundled engines change.")
+        self._updates_card(body)
+
+        # Interface — sounds and motion
+        body = self._card(page, 1, "Interface",
+                          "Sounds and animation come from the active theme. Turn them down or off here.")
+        self._interface_controls(body)
+
         # Plugins
-        body = self._card(page, 1, "Plugins",
+        body = self._card(page, 2, "Plugins",
                           f"Scanned from {self.paths.plugins_dir}. Toggle a plugin off to skip loading it "
                           "(useful for heavy tools); changes apply on reload (Ctrl+Shift+R).")
         bar = tag(ctk.CTkFrame(body, fg_color="transparent"), "transparent")
@@ -1936,7 +3221,7 @@ class App(ctk.CTk, _DnDBase):
             tag(ctk.CTkLabel(body, text=rec.status, anchor="e"), role).grid(row=i, column=2, sticky="e")
 
         # Bundled engines
-        body = self._card(page, 2, "Bundled engines",
+        body = self._card(page, 3, "Bundled engines",
                           f"Resolved only from {self.paths.bin_dir} — nothing is read from the system PATH.")
         row = 0
         for name, used_by in KNOWN_ENGINES:
@@ -1959,7 +3244,7 @@ class App(ctk.CTk, _DnDBase):
             row=row + 1, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
         # Storage
-        body = self._card(page, 3, "Storage",
+        body = self._card(page, 4, "Storage",
                           f"Mode: {'portable (data beside the app)' if self.paths.portable else 'installed (data in AppData)'}"
                           f"  ·  {APP_NAME} {APP_VERSION}  ·  Python {sys.version.split()[0]}"
                           f"  ·  Plugin API v{PLUGIN_API_VERSION}")
@@ -1977,6 +3262,57 @@ class App(ctk.CTk, _DnDBase):
                               command=lambda p=path: self.open_path(p)), "ghost").grid(row=r, column=2, sticky="e")
         self.register_drop_target(page, self._on_plugin_drop, accept=("files",))
         return page
+
+    def _interface_controls(self, body: Any) -> None:
+        tag = self.theme.tag
+        sounds = ctk.BooleanVar(value=self.theme.player.enabled)
+        boot = ctk.BooleanVar(value=bool(self.settings.get("core", "boot_anim", True)))
+        calm = ctk.BooleanVar(value=self.theme.reduce_motion)
+
+        def set_sounds() -> None:
+            self.theme.player.enabled = sounds.get()
+            self.settings.set("core", "ui_sounds", sounds.get())
+
+        def set_boot() -> None:
+            self.settings.set("core", "boot_anim", boot.get())
+
+        def set_calm() -> None:
+            self.theme.reduce_motion = calm.get()
+            self.settings.set("core", "reduce_motion", calm.get())
+            self._apply_shell_effects()
+
+        def set_volume(value: float) -> None:
+            self.theme.player.volume = round(float(value), 2)
+            self.settings.set("core", "ui_volume", self.theme.player.volume)
+
+        ctk.CTkSwitch(body, text="UI sounds", variable=sounds, command=set_sounds).grid(
+            row=0, column=0, sticky="w", pady=4)
+        volume = ctk.CTkSlider(body, from_=0, to=1, number_of_steps=20, width=220, command=set_volume)
+        volume.set(self.theme.player.volume)
+        volume.grid(row=0, column=1, sticky="w", padx=(12, 8))
+        tag(ctk.CTkButton(body, text="▶  Test", width=80, command=lambda: self.theme.play("notify")),
+            "ghost").grid(row=0, column=2, sticky="e")
+        ctk.CTkSwitch(body, text="Boot animation on start (themes that have one)", variable=boot,
+                      command=set_boot).grid(row=1, column=0, columnspan=3, sticky="w", pady=4)
+        ctk.CTkSwitch(body, text="Reduce motion (no glitch, decrypt or sweep effects)", variable=calm,
+                      command=set_calm).grid(row=2, column=0, columnspan=3, sticky="w", pady=4)
+        pops = ctk.BooleanVar(value=bool(self.settings.get("core", "toasts", True)))
+        ctk.CTkSwitch(body, text="Heads-up pop-ups", variable=pops,
+                      command=lambda: self.settings.set("core", "toasts", pops.get())).grid(
+            row=4, column=0, sticky="w", pady=4)
+        corner = ctk.CTkOptionMenu(body, values=["top-right", "bottom-right"], width=140,
+                                   command=lambda v: self.settings.set("core", "toast_corner", v))
+        corner.set(self.settings.get("core", "toast_corner", "top-right"))
+        corner.grid(row=4, column=1, sticky="w", padx=(12, 8))
+        tag(ctk.CTkButton(body, text="Preview", width=80, command=lambda: self.notify(
+            "Preview", "This is how heads-up messages look with the current theme.",
+            subtitle=f"{APP_NAME} · {self.theme.name}", note="pop-ups stack in the corner — hover to pause",
+            icon="✦")), "ghost").grid(row=4, column=2, sticky="e")
+        note = ("This theme has its own sound pack." if self.theme.has_sounds()
+                else "The active theme has no sounds — try a theme pack with sounds.")
+        if not self.theme.player.available:
+            note = "UI sounds are Windows-only."
+        tag(ctk.CTkLabel(body, text=note, anchor="w"), "muted").grid(row=3, column=0, columnspan=3, sticky="w")
 
     def _theme_row(self, parent: Any, row: int, info: ThemeInfo) -> None:
         tag = self.theme.tag
@@ -2137,8 +3473,13 @@ class App(ctk.CTk, _DnDBase):
     def set_status(self, text: str, level: str = "info") -> None:
         role = {"info": "muted", "success": "success", "warning": "warning", "error": "danger"}.get(level, "muted")
         text = " ".join(str(text).split())
-        text = self.theme.effects["status_prefix"] + text
-        self._status_label.configure(text=text[:300] + ("…" if len(text) > 300 else ""))
+        self._status_text = text
+        self._cursor_on = True
+        self._render_status()
+        if level == "error":
+            self.theme.play("error")
+        elif level == "success":
+            self.theme.play("success")
         self.theme.tag(self._status_label, role)
         self.theme.apply(self._status_label)
         if self._status_after is not None:
@@ -2151,6 +3492,158 @@ class App(ctk.CTk, _DnDBase):
             self._status_after = self.after(8000, lambda: self.set_status("Ready", "_idle"))
         if level == "error":
             self.log.error("Status: %s", text)
+
+    def notify(self, title: str, body: str = "", subtitle: str = "", image: Any = None, note: str = "",
+               on_click: Callable[[], Any] | None = None, duration: float = 6.0, icon: str = "",
+               source: str = "core") -> None:
+        if self._closing:
+            return
+        self.toasts.show(title, body, subtitle=subtitle, image=image, note=note, on_click=on_click,
+                         duration=duration, icon=icon)
+
+    # ── updates ───────────────────────────────────────────────────────────
+    UPDATE_INTERVAL_MS = 6 * 3600 * 1000
+
+    def _auto_update_check(self) -> None:
+        if self._closing:
+            return
+        self.after(self.UPDATE_INTERVAL_MS, self._auto_update_check)
+        if self.updater.enabled and self.settings.get("core", "auto_update_check", True):
+            self.check_for_updates(quiet=True)
+
+    def check_for_updates(self, quiet: bool = False) -> None:
+        if self.updater.busy:
+            return
+        if not self.updater.enabled:
+            self._update_message("Updates are off in a development copy — run the installed app.")
+            return
+        self.updater.busy = True
+        self._update_message("Checking GitHub for updates…")
+
+        def work() -> None:
+            try:
+                result = self.updater.check()
+                self.call_in_ui(done, result, None)
+            except Exception as exc:
+                self.call_in_ui(done, None, exc)
+
+        def done(result: UpdateCheck | None, exc: Exception | None) -> None:
+            self.updater.busy = False
+            if exc is not None:
+                self.log.warning("Update check failed: %s", exc)
+                self._update_message(f"Couldn't check for updates ({exc}).")
+                return
+            self._update_message(result.message)
+            if quiet and (result.items or result.installer_url):
+                self.notify("Update available", result.message, subtitle=f"{APP_NAME} · click to open Settings",
+                            icon="↑", duration=10, on_click=lambda: self.select(SETTINGS_KEY))
+
+        self.run_in_thread(work)
+
+    def install_updates(self) -> None:
+        check = self.updater.last
+        if check is None or self.updater.busy:
+            return
+        self.updater.busy = True
+        progress = lambda text: self.call_in_ui(self._update_message, text)  # noqa: E731
+
+        def work() -> None:
+            try:
+                done = self.updater.apply(check, progress) if check.items else {}
+                installer = None
+                if check.installer_url and not done.get("core"):
+                    installer = self.updater.download_installer(check, progress)
+                self.call_in_ui(finished, done, installer, None)
+            except Exception as exc:
+                self.call_in_ui(finished, {}, None, exc)
+
+        def finished(done: dict[str, int], installer: Path | None, exc: Exception | None) -> None:
+            self.updater.busy = False
+            if exc is not None:
+                self.log.exception("Update failed", exc_info=exc)
+                self._update_message(f"Update failed: {exc}")
+                self.set_status(f"Update failed: {exc}", "error")
+                return
+            if done.get("theme"):
+                self.theme.reload()
+                self._refresh_theme_menus()
+            if done.get("plugin") or done.get("character"):
+                self.reload_plugins()
+            if installer is not None:
+                self._update_message("Starting the installer — Multi-Tool will reopen when it's done.")
+                self._run_installer(installer)
+                return
+            if done.get("core"):
+                self._update_message("Core updated — restarting to finish…")
+                self.after(600, self.restart)
+                return
+            total = sum(done.values())
+            self._update_message(f"Updated {total} file{'s' if total != 1 else ''}. You're up to date.")
+            self.set_status("Updates installed", "success")
+            self._refresh_settings_page()
+
+        self.run_in_thread(work)
+
+    def _run_installer(self, installer: Path) -> None:
+        try:
+            subprocess.Popen([str(installer), "/SILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS", "/NORESTART"],
+                             close_fds=True)
+        except Exception as exc:
+            self._update_message(f"Couldn't start the installer: {exc}")
+            return
+        self.after(800, self._on_close)
+
+    def restart(self) -> None:
+        args = [sys.executable] if IS_FROZEN else [sys.executable, str(Path(sys.argv[0]).resolve())]
+        try:
+            subprocess.Popen(args + ["--after-update", str(os.getpid())], close_fds=True,
+                             cwd=str(self.paths.app_dir))
+        except Exception as exc:
+            self.set_status(f"Restart failed — please reopen {APP_NAME}: {exc}", "error")
+            return
+        self._on_close()
+
+    def _update_message(self, text: str) -> None:
+        self._update_text = text
+        label = getattr(self, "_update_label", None)
+        try:
+            if label is not None and label.winfo_exists():
+                label.configure(text=text)
+            button = getattr(self, "_update_button", None)
+            if button is not None and button.winfo_exists():
+                last = self.updater.last
+                ready = bool(last and (last.items or last.installer_url)) and not self.updater.busy
+                if ready:
+                    button.configure(text="Download & install" if last.installer_url and not last.items
+                                     else "Update now")
+                    button.grid()
+                else:
+                    button.grid_remove()
+        except Exception:
+            pass
+
+    def _updates_card(self, body: Any) -> None:
+        tag = self.theme.tag
+        up = self.updater
+        build = f" · build {up.build}" if up.build else ""
+        tag(ctk.CTkLabel(body, text=f"{APP_NAME} {APP_VERSION}{build}   ·   source: github.com/{up.repo}",
+                         anchor="w"), "text").grid(row=0, column=0, columnspan=3, sticky="ew")
+        self._update_label = tag(ctk.CTkLabel(body, text=getattr(self, "_update_text", "") or
+                                              ("Plugins, themes and the app core update in place — no reinstall."
+                                               if up.enabled else "Updates are off in a development copy."),
+                                              anchor="w", justify="left", wraplength=640), "muted")
+        self._update_label.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(2, 8))
+        bar = tag(ctk.CTkFrame(body, fg_color="transparent"), "transparent")
+        bar.grid(row=2, column=0, columnspan=3, sticky="ew")
+        ctk.CTkButton(bar, text="Check for updates", width=160,
+                      command=lambda: self.check_for_updates()).grid(row=0, column=0, sticky="w")
+        self._update_button = ctk.CTkButton(bar, text="Update now", width=150, command=self.install_updates)
+        self._update_button.grid(row=0, column=1, sticky="w", padx=8)
+        auto = ctk.BooleanVar(value=bool(self.settings.get("core", "auto_update_check", True)))
+        ctk.CTkSwitch(bar, text="Check automatically", variable=auto,
+                      command=lambda: self.settings.set("core", "auto_update_check", auto.get())).grid(
+            row=0, column=2, sticky="w", padx=8)
+        self._update_message(getattr(self, "_update_text", "") or self._update_label.cget("text"))
 
     def register_drop_target(self, widget: Any, callback: Callable[[DropPayload], None],
                              accept: tuple[str, ...] = ("files", "text"), owner: str = "core") -> bool:
@@ -2351,6 +3844,9 @@ class App(ctk.CTk, _DnDBase):
         self._theme_var.set(name)
         self.theme.set_theme(name)
         self._refresh_settings_page()
+        self.theme.play("open")
+        self._start_decrypt()
+        self._start_sweep()
 
     def _toggle_plugin(self, key: str, enabled: bool) -> None:
         disabled = set(self.settings.get("core", "disabled_plugins", []) or [])
@@ -2378,6 +3874,8 @@ class App(ctk.CTk, _DnDBase):
         except Exception:
             self.log.exception("Could not save window geometry")
         self._schedule_glitch()  # cancels the pending glitch timer (closing flag is set)
+        self._schedule_ticker()
+        self.toasts.close_all()
         self._unload_plugins()
         self.log.info("Shutting down")
         self.destroy()
@@ -2397,7 +3895,26 @@ def _set_default_font() -> None:
         pass
 
 
+def wait_for_process(pid: int, timeout: float = 20.0) -> None:
+    """After an in-app update the new copy waits for the old one to close before taking the instance lock."""
+    if not IS_WINDOWS or pid <= 0:
+        return
+    try:
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if handle:
+            kernel32.WaitForSingleObject(handle, int(timeout * 1000))
+            kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+
+
 def main() -> int:
+    if "--after-update" in sys.argv:
+        try:
+            wait_for_process(int(sys.argv[sys.argv.index("--after-update") + 1]))
+        except (ValueError, IndexError):
+            pass
     paths = resolve_paths()
     ensure_stdio(paths)
     log = setup_logging(paths)

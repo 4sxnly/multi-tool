@@ -1,11 +1,14 @@
 """
 Desktop Companion — Multi-Tool plugin (API v1)
 
-A small animated character that lives on your desktop, chats with you using a small open-source
-AI that runs entirely on your PC (Qwen3.5 via the bundled llama.cpp engine — downloaded once from
-inside the app, then offline), can speak its replies with lip sync, and can look at a screenshot
-or a window — but only when you share one. Online providers (Claude API, any OpenAI-compatible
-server) are optional alternatives.
+A small animated character that lives on your desktop — only while you switch it on — and chats
+with you using a small open-source AI that runs entirely on your PC (Qwen3.5 via the bundled
+llama.cpp engine — downloaded once from inside the app, then offline). It speaks replies with lip
+sync (natural Kokoro neural voices or Windows voices, adjustable speed), can hold a hands-free voice
+conversation (offline Moonshine speech recognition + Silero voice detection, mic only while you turn
+it on, with a "mute me" switch), and can look at up to four images per message — screenshots,
+shared windows, pasted (Ctrl+V), dropped or picked files. Online providers (Claude API, any
+OpenAI-compatible server) are optional alternatives.
 
 Design rules (from the product brief):
   * Personality governs how it behaves; separate Permissions govern what it can access.
@@ -25,7 +28,8 @@ default character, so a pack can be as small as a name and two colours.
     character.json
       id, name, author, version, description
       persona    pronouns, backstory, speaking_style, greetings[], idle_lines[], defaults{5 sliders 0..1}
-      voice      prefer[] (Windows voice names, first match wins), rate -10..10, pitch -10..10, volume 0..100
+      voice      kokoro (neural voice id, e.g. "af_heart", "am_onyx", "bf_emma"), speed 0.6..1.6,
+                 prefer[] (Windows voice names, first match wins), rate -10..10, pitch -10..10, volume 0..100
       look       rig "procedural": colours + hair_style (bob | long | spiky | buzz)
                  rig "sprite":     size [w,h] + layers[] of PNGs (see README in the template)
       animation  blink_interval [min,max], breath_rate, motion, walk_speed, idle_actions{name:{weight,cooldown}}
@@ -44,6 +48,7 @@ import io
 import json
 import math
 import os
+import queue
 import random
 import re
 import shutil
@@ -72,6 +77,16 @@ try:
     import winsound
 except Exception:
     winsound = None
+
+try:
+    import numpy as np
+except Exception:  # pragma: no cover
+    np = None
+
+try:
+    import sounddevice as sd
+except Exception:  # PortAudio missing
+    sd = None
 
 IS_WINDOWS = sys.platform == "win32"
 TRANSPARENT_KEY = "#fe00fe"   # colour keyed out of the overlay window — never use it in art
@@ -128,7 +143,8 @@ DEFAULT_CHARACTER: dict[str, Any] = {
                        "That's a lot of tabs. Respect.", "If it compiles first try, I'm suspicious."],
         "defaults": {"warmth": 0.65, "sincerity": 0.5, "chattiness": 0.35, "directness": 0.6, "energy": 0.6},
     },
-    "voice": {"prefer": ["Zira", "Aria", "Jenny", "Hazel", "Susan"], "rate": 1, "pitch": 2, "volume": 90},
+    "voice": {"prefer": ["Zira", "Aria", "Jenny", "Hazel", "Susan"], "rate": 1, "pitch": 2, "volume": 90,
+              "kokoro": "af_heart", "speed": 1.1},
     "look": {
         "rig": "procedural",
         "scale": 1.0,
@@ -274,6 +290,12 @@ def normalize_character(raw: dict[str, Any]) -> dict[str, Any]:
             voice[key] = int(max(lo, min(float(voice.get(key, 0)), hi)))
         except (TypeError, ValueError):
             voice[key] = DEFAULT_CHARACTER["voice"][key]
+    if str(voice.get("kokoro", "")) not in KOKORO_SID:
+        voice["kokoro"] = DEFAULT_CHARACTER["voice"]["kokoro"]
+    try:
+        voice["speed"] = round(max(0.6, min(float(voice.get("speed", 1.1)), 1.6)), 2)
+    except (TypeError, ValueError):
+        voice["speed"] = 1.1
     return data
 
 
@@ -559,10 +581,9 @@ def stream_anthropic(api_key: str, model: str, system: str, messages: list[dict[
                      base_url: str = "https://api.anthropic.com", low_latency: bool = True) -> None:
     def to_blocks(m: dict[str, Any]) -> Any:
         blocks: list[dict[str, Any]] = []
-        if m.get("image"):
-            media, data = m["image"]
+        for media, data in message_images(m):
             blocks.append({"type": "image", "source": {"type": "base64", "media_type": media, "data": data}})
-        blocks.append({"type": "text", "text": m["text"] or "(screenshot)"})
+        blocks.append({"type": "text", "text": m["text"] or "(image)"})
         return blocks
 
     body: dict[str, Any] = {"model": model, "max_tokens": 700, "system": system, "stream": True,
@@ -599,11 +620,11 @@ def stream_openai_compatible(api_key: str, model: str, system: str, messages: li
                              on_text: Callable[[str], None], cancel: threading.Event, base_url: str,
                              extra: dict[str, Any] | None = None, max_tokens: int = 700) -> None:
     def to_content(m: dict[str, Any]) -> Any:
-        if not m.get("image"):
+        images = message_images(m)
+        if not images:
             return m["text"]
-        media, data = m["image"]
-        return [{"type": "text", "text": m["text"] or "(screenshot)"},
-                {"type": "image_url", "image_url": {"url": f"data:{media};base64,{data}"}}]
+        return [{"type": "text", "text": m["text"] or "(image)"}] + [
+            {"type": "image_url", "image_url": {"url": f"data:{media};base64,{data}"}} for media, data in images]
 
     body = {"model": model, "stream": True, "max_tokens": max_tokens,
             "messages": [{"role": "system", "content": system}] +
@@ -642,9 +663,10 @@ def prepare_history(history: list[dict[str, Any]], limit: int = 24) -> list[dict
         recent.pop(0)
     last_user = max((i for i, m in enumerate(recent) if m["role"] == "user"), default=-1)
     for i, m in enumerate(recent):
-        if m.get("image") and i != last_user:
+        if message_images(m) and i != last_user:
             m["image"] = None
-            m["text"] = (m["text"] + " " if m["text"] else "") + "[A screenshot was shared here earlier; it is no longer attached.]"
+            m["images"] = []
+            m["text"] = (m["text"] + " " if m["text"] else "") + "[An image was shared here earlier; it is no longer attached.]"
     return recent
 
 
@@ -1171,6 +1193,620 @@ def wav_envelope(path: Path, window: float = 0.03) -> tuple[list[float], float]:
     for v in norm[1:]:
         smooth.append(smooth[-1] * 0.35 + v * 0.65)
     return smooth, duration
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Neural voices + voice chat (sherpa-onnx, bundled; voice models downloaded in-app)
+# ════════════════════════════════════════════════════════════════════════════
+
+SHERPA_RELEASES = os.environ.get("MT_SHERPA_BASE", "https://github.com/k2-fsa/sherpa-onnx/releases/download")
+VOICE_ADDONS: dict[str, dict[str, Any]] = {
+    "voices": {
+        "name": "Neural voices",
+        "about": "28 natural English voices (Kokoro). About 130 MB, one time — then fully offline.",
+        "parts": [{"url": f"{SHERPA_RELEASES}/tts-models/kokoro-int8-multi-lang-v1_0.tar.bz2",
+                   "size": 132_353_410, "kind": "tar"}],
+        "needs": ["model.int8.onnx", "voices.bin", "tokens.txt", "espeak-ng-data"],
+    },
+    "listen": {
+        "name": "Voice chat",
+        "about": "Offline speech recognition (Moonshine) and voice detection. About 110 MB, one time.",
+        "parts": [{"url": f"{SHERPA_RELEASES}/asr-models/sherpa-onnx-moonshine-tiny-en-int8.tar.bz2",
+                   "size": 107_600_538, "kind": "tar"},
+                  {"url": f"{SHERPA_RELEASES}/asr-models/silero_vad.onnx", "size": 643_854, "kind": "file",
+                   "name": "silero_vad.onnx"}],
+        "needs": ["preprocess.onnx", "encode.int8.onnx", "uncached_decode.int8.onnx", "cached_decode.int8.onnx",
+                  "tokens.txt", "silero_vad.onnx"],
+    },
+}
+
+# Kokoro v1.0 speaker ids (sherpa-onnx kokoro-multi-lang-v1_0): English voices only
+KOKORO_VOICES: list[tuple[str, int, str]] = [
+    ("af_heart", 3, "Heart — warm · US"), ("af_bella", 2, "Bella — bright · US"),
+    ("af_nova", 7, "Nova — clear · US"), ("af_sky", 10, "Sky — airy · US"), ("af_sarah", 9, "Sarah — calm · US"),
+    ("af_nicole", 6, "Nicole — soft, close · US"), ("af_jessica", 4, "Jessica — casual · US"),
+    ("af_river", 8, "River — relaxed · US"), ("af_kore", 5, "Kore — steady · US"),
+    ("af_aoede", 1, "Aoede — gentle · US"), ("af_alloy", 0, "Alloy — neutral · US"),
+    ("am_michael", 16, "Michael — friendly · US"), ("am_adam", 11, "Adam — deep · US"),
+    ("am_eric", 13, "Eric — confident · US"), ("am_liam", 15, "Liam — young · US"),
+    ("am_onyx", 17, "Onyx — low, smooth · US"), ("am_fenrir", 14, "Fenrir — rough · US"),
+    ("am_echo", 12, "Echo — narrator · US"), ("am_puck", 18, "Puck — playful · US"),
+    ("am_santa", 19, "Santa — jolly · US"),
+    ("bf_emma", 21, "Emma — polished · UK"), ("bf_isabella", 22, "Isabella — warm · UK"),
+    ("bf_alice", 20, "Alice — crisp · UK"), ("bf_lily", 23, "Lily — light · UK"),
+    ("bm_george", 26, "George — classic · UK"), ("bm_fable", 25, "Fable — storyteller · UK"),
+    ("bm_daniel", 24, "Daniel — measured · UK"), ("bm_lewis", 27, "Lewis — gravelly · UK"),
+]
+KOKORO_SID = {key: sid for key, sid, _ in KOKORO_VOICES}
+KOKORO_LABEL = {key: label for key, _, label in KOKORO_VOICES}
+KOKORO_BY_LABEL = {label: key for key, _, label in KOKORO_VOICES}
+SPEED_RANGE = (0.6, 1.6)
+
+_SHERPA: dict[str, Any] = {}
+
+
+def sherpa() -> Any:
+    """Import sherpa-onnx lazily (it's heavy); raises with a readable message if it isn't bundled."""
+    if "mod" not in _SHERPA:
+        try:
+            import sherpa_onnx
+            _SHERPA["mod"] = sherpa_onnx
+        except Exception as exc:
+            _SHERPA["mod"] = None
+            _SHERPA["error"] = str(exc)
+    if _SHERPA["mod"] is None:
+        raise RuntimeError("the voice engine (sherpa-onnx) isn't in this build — update Multi-Tool "
+                           f"({_SHERPA.get('error', 'not installed')})")
+    return _SHERPA["mod"]
+
+
+def sherpa_ok() -> bool:
+    try:
+        sherpa()
+        return True
+    except RuntimeError:
+        return False
+
+
+def _make(cls: Any, kwargs: dict[str, Any], optional: tuple[str, ...] = ()) -> Any:
+    """Build a sherpa config, dropping optional arguments an older/newer version doesn't accept."""
+    kwargs = dict(kwargs)
+    while True:
+        try:
+            return cls(**kwargs)
+        except TypeError:
+            drop = next((k for k in optional if k in kwargs), None)
+            if drop is None:
+                raise
+            kwargs.pop(drop)
+
+
+class AddonManager:
+    """Downloads the optional voice models into %LOCALAPPDATA%\\MultiTool\\models\\voice\\<key>."""
+
+    def __init__(self, root: Path, log: Any):
+        self.root = root / "voice"
+        self.log = log
+        self.downloading: str | None = None
+
+    def folder(self, key: str) -> Path:
+        return self.root / key
+
+    def installed(self, key: str) -> bool:
+        folder = self.folder(key)
+        return all((folder / name).exists() for name in VOICE_ADDONS[key]["needs"])
+
+    @staticmethod
+    def total(key: str) -> int:
+        return sum(part["size"] for part in VOICE_ADDONS[key]["parts"])
+
+    def download(self, key: str, progress: Callable[[int, int], None], cancel: threading.Event) -> None:
+        folder = self.folder(key)
+        staging = folder / ".download"
+        staging.mkdir(parents=True, exist_ok=True)
+        total, before = self.total(key), 0
+        for part in VOICE_ADDONS[key]["parts"]:
+            name = part.get("name") or part["url"].rsplit("/", 1)[-1]
+            if part["kind"] == "file" and (folder / name).exists():
+                before += part["size"]
+                continue
+            target = staging / name
+            self._fetch(part["url"], target, lambda n, b=before: progress(b + n, total), cancel)
+            if part["kind"] == "tar":
+                self._extract(target, folder, cancel)
+                target.unlink(missing_ok=True)
+            else:
+                os.replace(target, folder / name)
+            before += part["size"]
+        shutil.rmtree(staging, ignore_errors=True)
+        if not self.installed(key):
+            raise RuntimeError("the download finished but some files are missing — try again")
+
+    def _fetch(self, url: str, target: Path, progress: Callable[[int], None], cancel: threading.Event) -> None:
+        part = target.with_name(target.name + ".part")
+        for attempt in range(6):
+            have = part.stat().st_size if part.exists() else 0
+            headers = {"User-Agent": "MultiTool"}
+            if have:
+                headers["Range"] = f"bytes={have}-"
+            try:
+                with _urlopen(urllib.request.Request(url, headers=headers), 60) as resp:
+                    if have and getattr(resp, "status", 200) != 206:
+                        have = 0  # server ignored the range: start over
+                    with open(part, "ab" if have else "wb") as fh:
+                        while True:
+                            if cancel.is_set():
+                                raise ProviderError("Download paused — press Download again to resume.")
+                            chunk = resp.read(1 << 17)
+                            if not chunk:
+                                break
+                            fh.write(chunk)
+                            have += len(chunk)
+                            progress(have)
+                os.replace(part, target)
+                return
+            except ProviderError:
+                raise
+            except urllib.error.HTTPError as exc:
+                if exc.code == 416:  # already complete
+                    os.replace(part, target)
+                    return
+                if attempt == 5 or exc.code in (403, 404):
+                    raise ProviderError(f"Download failed ({exc.code}).") from None
+            except (urllib.error.URLError, OSError, ConnectionError, TimeoutError,
+                    http.client.HTTPException) as exc:
+                if attempt == 5:
+                    raise ProviderError(f"Download failed: {exc}") from None
+            time.sleep(min(2 ** attempt, 20))
+
+    @staticmethod
+    def _extract(archive: Path, dest: Path, cancel: threading.Event) -> None:
+        """Unpack a .tar.bz2, dropping its top folder and anything that tries to escape."""
+        import tarfile
+        with tarfile.open(archive, "r:*") as tar:
+            for member in tar:
+                if cancel.is_set():
+                    raise ProviderError("Download paused — press Download again to resume.")
+                parts = Path(member.name).parts
+                if len(parts) < 2 or any(p in ("..", "") for p in parts) or Path(member.name).is_absolute():
+                    continue
+                rel = Path(*parts[1:])
+                if rel.parts[0] == "test_wavs":
+                    continue
+                out = dest / rel
+                if member.isdir():
+                    out.mkdir(parents=True, exist_ok=True)
+                elif member.isfile():
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    src = tar.extractfile(member)
+                    if src is not None:
+                        with src, open(out, "wb") as fh:
+                            shutil.copyfileobj(src, fh)
+
+    def delete(self, key: str) -> None:
+        shutil.rmtree(self.folder(key), ignore_errors=True)
+
+
+class NeuralVoice:
+    """Kokoro text-to-speech through sherpa-onnx. Loaded on first use, unloaded when Juno shuts down."""
+
+    def __init__(self, folder: Path, log: Any):
+        self.folder = folder
+        self.log = log
+        self._tts: Any = None
+        self._lock = threading.Lock()
+
+    def _create(self, full: bool) -> Any:
+        so = sherpa()
+        f = self.folder
+        kokoro_kw: dict[str, Any] = {"model": str(f / "model.int8.onnx"), "voices": str(f / "voices.bin"),
+                                     "tokens": str(f / "tokens.txt"), "data_dir": str(f / "espeak-ng-data")}
+        if full:
+            lexicons = [str(f / n) for n in ("lexicon-us-en.txt", "lexicon-zh.txt") if (f / n).exists()]
+            if lexicons:
+                kokoro_kw["lexicon"] = ",".join(lexicons)
+            if (f / "dict").is_dir():
+                kokoro_kw["dict_dir"] = str(f / "dict")
+        kokoro = _make(so.OfflineTtsKokoroModelConfig, kokoro_kw, optional=("dict_dir", "lexicon"))
+        threads = max(1, min(4, (os.cpu_count() or 2) // 2))
+        model = _make(so.OfflineTtsModelConfig, {"kokoro": kokoro, "num_threads": threads, "provider": "cpu",
+                                                 "debug": False}, optional=("debug", "provider"))
+        config = _make(so.OfflineTtsConfig, {"model": model, "max_num_sentences": 1}, optional=("max_num_sentences",))
+        return so.OfflineTts(config)
+
+    def load(self) -> Any:
+        with self._lock:
+            if self._tts is None:
+                try:
+                    self._tts = self._create(full=True)
+                except Exception as exc:
+                    self.log.info("Kokoro with lexicons failed (%s); trying the plain setup", exc)
+                    self._tts = self._create(full=False)
+            return self._tts
+
+    def generate(self, text: str, voice: str, speed: float) -> tuple[bytes, int]:
+        tts = self.load()
+        audio = tts.generate(text, sid=KOKORO_SID.get(voice, 3), speed=float(speed))
+        samples, rate = audio.samples, int(audio.sample_rate)
+        if samples is None or len(samples) == 0:
+            raise RuntimeError("the voice engine returned no audio")
+        return float_to_pcm16(samples), rate
+
+    def unload(self) -> None:
+        with self._lock:
+            self._tts = None
+
+
+def float_to_pcm16(samples: Any) -> bytes:
+    if np is not None:
+        data = np.clip(np.asarray(samples, dtype=np.float32), -1.0, 1.0)
+        return (data * 32767).astype("<i2").tobytes()
+    out = array.array("h", (int(max(-1.0, min(1.0, s)) * 32767) for s in samples))
+    if sys.byteorder == "big":
+        out.byteswap()
+    return out.tobytes()
+
+
+def pcm_envelope(pcm: bytes, rate: int, window: float = 0.03) -> tuple[list[float], float]:
+    """Loudness per 30 ms window (0..1) of mono 16-bit audio, for lip sync."""
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) - len(pcm) % 2])
+    if sys.byteorder == "big":
+        samples.byteswap()
+    duration = len(samples) / float(rate or 1)
+    step = max(1, int(rate * window))
+    levels = []
+    for i in range(0, len(samples), step):
+        chunk = samples[i:i + step:4]  # every 4th sample is plenty for a loudness estimate
+        if chunk:
+            levels.append(math.sqrt(sum(s * s for s in chunk) / len(chunk)))
+    peak = max(levels) if levels else 0
+    if peak <= 0:
+        return [0.0] * len(levels), duration
+    norm = [min(1.0, lv / (peak * 0.75)) for lv in levels]
+    smooth = [norm[0]] if norm else []
+    for v in norm[1:]:
+        smooth.append(smooth[-1] * 0.35 + v * 0.65)
+    return smooth, duration
+
+
+def read_wav_mono16(path: Path) -> tuple[bytes, int]:
+    with wave.open(str(path), "rb") as wf:
+        channels, width, rate = wf.getnchannels(), wf.getsampwidth(), wf.getframerate()
+        raw = wf.readframes(wf.getnframes())
+    if width != 2:
+        raise RuntimeError("unsupported speech audio format")
+    if channels > 1:
+        samples = array.array("h")
+        samples.frombytes(raw[: len(raw) - len(raw) % 2])
+        raw = samples[::channels].tobytes()
+    return raw, rate
+
+
+SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+|\n+")
+
+
+def split_for_speech(text: str, limit: int = 1200) -> list[str]:
+    """Short first chunk (so speech starts fast), then sentence-sized chunks."""
+    text = re.sub(r"[*_`#>]+", "", text).strip()[:limit]
+    parts = [p.strip() for p in SENTENCE_SPLIT_RE.split(text) if p and p.strip()]
+    chunks: list[str] = []
+    current = ""
+    for part in parts:
+        cap = 120 if not chunks else 260
+        if current and len(current) + len(part) + 1 > cap:
+            chunks.append(current)
+            current = part
+        else:
+            current = f"{current} {part}".strip()
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+class AudioPlayer:
+    """Plays mono 16-bit audio; blocks the calling (worker) thread and stops early on cancel."""
+
+    def __init__(self, temp_dir: Path, log: Any):
+        self.temp_dir = temp_dir
+        self.log = log
+
+    def play_blocking(self, pcm: bytes, rate: int, cancel: threading.Event) -> None:
+        duration = len(pcm) / 2 / float(rate)
+        if sd is not None and np is not None:
+            try:
+                sd.play(np.frombuffer(pcm, dtype="<i2"), rate)
+                self._wait(duration, cancel, sd.stop)
+                return
+            except Exception as exc:
+                self.log.info("sounddevice playback failed (%s); using winsound", exc)
+        if winsound is not None:
+            path = self.temp_dir / f"say-{uuid.uuid4().hex[:6]}.wav"
+            with wave.open(str(path), "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(rate)
+                wf.writeframes(pcm)
+            winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+            self._wait(duration, cancel, lambda: winsound.PlaySound(None, 0))
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return
+        self._wait(duration, cancel, lambda: None)
+
+    @staticmethod
+    def _wait(duration: float, cancel: threading.Event, stop: Callable[[], Any]) -> None:
+        end = time.monotonic() + duration + 0.04
+        while time.monotonic() < end:
+            if cancel.wait(0.02):
+                try:
+                    stop()
+                except Exception:
+                    pass
+                return
+
+
+class VoiceOut:
+    """Speaks replies sentence by sentence: the next sentence is synthesised while the current one plays."""
+
+    def __init__(self, plugin: "Plugin"):
+        self.p = plugin
+        self.cancel = threading.Event()
+        self.active = False
+        self.last_end = 0.0
+        self.player = AudioPlayer(plugin.temp_dir, plugin.ctx.log)
+
+    def stop(self) -> None:
+        self.cancel.set()
+
+    def busy(self, tail: float = 0.4) -> bool:
+        return self.active or time.monotonic() - self.last_end < tail
+
+    def say(self, text: str, on_done: Callable[[], None] | None = None) -> None:
+        self.stop()
+        cancel = self.cancel = threading.Event()
+        config = self.p.voice_config()
+        chunks = split_for_speech(text)
+        if not chunks:
+            return
+        ui = self.p.ctx.call_in_ui
+        pipe: "queue.Queue[Any]" = queue.Queue(maxsize=2)
+        self.active = True
+
+        def put(item: Any) -> bool:
+            while not cancel.is_set():
+                try:
+                    pipe.put(item, timeout=0.1)
+                    return True
+                except queue.Full:
+                    continue
+            return False
+
+        def produce() -> None:
+            for chunk in chunks:
+                if cancel.is_set():
+                    break
+                try:
+                    item = self._synth(chunk, config)
+                except Exception as exc:  # neural voice trouble → Windows voice for the rest
+                    if config["engine"] == "neural":
+                        self.p.ctx.log.warning("Neural voice failed (%s); falling back to Windows voices", exc)
+                        config["engine"] = "windows"
+                        ui(self.p.voice_problem, str(exc))
+                        try:
+                            item = self._synth(chunk, config)
+                        except Exception as exc2:
+                            item = exc2
+                    else:
+                        item = exc
+                if not put(item) or isinstance(item, Exception):
+                    break
+            put(None)
+
+        def consume() -> None:
+            try:
+                while not cancel.is_set():
+                    try:
+                        item = pipe.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
+                    if item is None:
+                        break
+                    if isinstance(item, Exception):
+                        self.p.ctx.log.warning("Speech failed: %s", item)
+                        break
+                    pcm, rate = item
+                    envelope, duration = pcm_envelope(pcm, rate)
+                    ui(self.p.avatar.start_speaking, envelope, duration)
+                    self.player.play_blocking(pcm, rate, cancel)
+            finally:
+                self.active = False
+                self.last_end = time.monotonic()
+                ui(self.p.avatar.stop_speaking)
+                if on_done is not None:
+                    ui(on_done)
+
+        threading.Thread(target=produce, daemon=True, name="juno-tts").start()
+        threading.Thread(target=consume, daemon=True, name="juno-play").start()
+
+    def _synth(self, text: str, config: dict[str, Any]) -> tuple[bytes, int]:
+        if config["engine"] == "neural":
+            return self.p.neural.generate(text, config["voice"], config["speed"])
+        out = self.p.temp_dir / f"sapi-{uuid.uuid4().hex[:6]}.wav"
+        try:
+            self.p.speech.synthesize(text, config["sapi_voice"], config["sapi_rate"], config["sapi_pitch"],
+                                     config["sapi_volume"], out)
+            return read_wav_mono16(out)
+        finally:
+            try:
+                out.unlink()
+            except OSError:
+                pass
+
+
+class VoiceChat:
+    """Hands-free conversation: microphone → voice detection → offline speech recognition → chat.
+    Only runs while the user has the mic switched on; audio is processed in memory and never saved."""
+
+    RATE = 16000
+
+    def __init__(self, plugin: "Plugin"):
+        self.p = plugin
+        self.running = False
+        self.muted = False
+        self.state = "off"           # off | loading | listening | hearing | paused | muted
+        self._stream: Any = None
+        self._queue: "queue.Queue[Any]" = queue.Queue()
+        self._recognizer: Any = None
+        self._vad_path: Path | None = None
+        self._thread: threading.Thread | None = None
+
+    def available(self) -> tuple[bool, str]:
+        if sd is None or np is None:
+            return False, "microphone support isn't in this build — update Multi-Tool"
+        if not sherpa_ok():
+            return False, "the voice engine isn't in this build — update Multi-Tool"
+        if not self.p.addons.installed("listen"):
+            return False, "download"
+        return True, ""
+
+    def start(self, on_ready: Callable[[], None], on_error: Callable[[str], None]) -> None:
+        if self.running:
+            return
+        self.running = True
+        self._set_state("loading")
+        self._queue = queue.Queue()
+
+        def boot() -> None:
+            try:
+                self._load()
+                self._stream = sd.InputStream(samplerate=self.RATE, channels=1, dtype="float32", blocksize=1600,
+                                              callback=self._callback)
+                self._stream.start()
+            except Exception as exc:
+                self.running = False
+                self._close_stream()
+                self._set_state("off")
+                self.p.ctx.call_in_ui(on_error, f"Couldn't start the microphone: {exc}")
+                return
+            self.p.ctx.call_in_ui(on_ready)
+            self._loop()
+
+        self._thread = threading.Thread(target=boot, daemon=True, name="juno-mic")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self.running = False
+        self._close_stream()
+        self._set_state("off")
+
+    def unload(self) -> None:
+        self.stop()
+        self._recognizer = None
+
+    def _close_stream(self) -> None:
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+
+    def _callback(self, indata: Any, _frames: int, _time: Any, _status: Any) -> None:
+        if self.running:
+            self._queue.put(indata[:, 0].copy())
+
+    def _load(self) -> None:
+        if self._recognizer is None:
+            so = sherpa()
+            f = self.p.addons.folder("listen")
+            self._recognizer = so.OfflineRecognizer.from_moonshine(
+                preprocessor=str(f / "preprocess.onnx"), encoder=str(f / "encode.int8.onnx"),
+                uncached_decoder=str(f / "uncached_decode.int8.onnx"),
+                cached_decoder=str(f / "cached_decode.int8.onnx"), tokens=str(f / "tokens.txt"),
+                num_threads=max(1, min(4, (os.cpu_count() or 2) // 2)))
+        self._vad_path = self.p.addons.folder("listen") / "silero_vad.onnx"
+
+    def _make_vad(self) -> Any:
+        so = sherpa()
+        config = so.VadModelConfig()
+        config.silero_vad.model = str(self._vad_path)
+        for attr, value in (("threshold", 0.5), ("min_silence_duration", 0.55), ("min_speech_duration", 0.25),
+                            ("max_speech_duration", 20.0)):
+            try:
+                setattr(config.silero_vad, attr, value)
+            except Exception:
+                pass
+        config.sample_rate = self.RATE
+        return so.VoiceActivityDetector(config, buffer_size_in_seconds=30)
+
+    def _paused(self) -> bool:
+        return self.muted or self.p.voice_out.busy() or self.p._busy
+
+    def _loop(self) -> None:
+        vad = self._make_vad()
+        window = 512  # silero VAD frame size at 16 kHz
+        buffer = np.zeros(0, dtype=np.float32)
+        was_paused = False
+        heard = False
+        while self.running:
+            try:
+                block = self._queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if self._paused():
+                if not was_paused:
+                    vad = self._make_vad()  # forget anything half-heard (e.g. Juno's own voice)
+                    buffer = np.zeros(0, dtype=np.float32)
+                    was_paused = True
+                    self._set_state("muted" if self.muted else "paused")
+                continue
+            if was_paused:
+                was_paused = False
+                self._set_state("listening")
+            buffer = np.concatenate([buffer, block])
+            while len(buffer) >= window:
+                vad.accept_waveform(buffer[:window])
+                buffer = buffer[window:]
+            speaking = bool(vad.is_speech_detected())
+            if speaking != heard:
+                heard = speaking
+                self._set_state("hearing" if speaking else "listening")
+            while not vad.empty():
+                segment = vad.front.samples
+                vad.pop()
+                if len(segment) < self.RATE * 0.35:
+                    continue
+                text = self._recognize(segment)
+                if text:
+                    self.p.ctx.call_in_ui(self.p.on_heard, text)
+
+    def _recognize(self, samples: Any) -> str:
+        stream = self._recognizer.create_stream()
+        stream.accept_waveform(self.RATE, samples)
+        self._recognizer.decode_stream(stream)
+        text = (stream.result.text or "").strip()
+        if not re.search(r"[A-Za-z0-9]", text) or text.lower().strip(" .!?") in ("", "you", "uh", "um", "hmm"):
+            return ""
+        return text
+
+    def _set_state(self, state: str) -> None:
+        if state != self.state:
+            self.state = state
+            try:
+                self.p.ctx.call_in_ui(self.p.chat.refresh_mic)
+            except Exception:
+                pass
+
+
+def message_images(message: dict[str, Any]) -> list[tuple[str, str]]:
+    images = list(message.get("images") or [])
+    if message.get("image"):
+        images.insert(0, message["image"])
+    return images
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1810,8 +2446,14 @@ class Avatar:
         dnd = bool(self.p.settings.get("dnd"))
         menu.add_command(label=("Turn off" if dnd else "Turn on") + " Do Not Disturb", command=self.p.toggle_dnd)
         menu.add_command(label="Back to my corner", command=self.p.reset_home)
+        menu.add_command(label=("Stop" if self.p.listener.state != "off" else "Start") + " voice chat",
+                         command=self.p.toggle_voice_chat)
+        menu.add_command(label="Unmute voice" if self.p.settings.get("muted") else "Mute voice",
+                         command=self.p.toggle_mute)
         menu.add_command(label="Companion settings", command=self.p.open_settings_page)
-        menu.add_command(label="Hide", command=self.p.hide_avatar)
+        menu.add_command(label="Hide (keep running)", command=self.p.hide_avatar)
+        menu.add_separator()
+        menu.add_command(label=f"Shut down {self.p.character['name']}", command=self.p.power_off)
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -2077,16 +2719,20 @@ class Avatar:
 # ════════════════════════════════════════════════════════════════════════════
 
 class ChatPanel:
-    WIDTH, HEIGHT = 390, 540
+    WIDTH, HEIGHT = 420, 640
 
     def __init__(self, plugin: "Plugin"):
         self.p = plugin
         self.win: Any = None
         self.is_open = False
-        self._preview_image: Any = None
+        self._thumbs: list[Any] = []
         self._pending_memories: list[str] = []
         self._streaming = False
+        self._voice_open = False
+        self._setup_visible = False
+        self.addon_widgets: dict[str, dict[str, Any]] = {}
 
+    # ── layout ───────────────────────────────────────────────────────────
     def _build(self) -> None:
         ctx = self.p.ctx
         t = ctx.theme
@@ -2094,34 +2740,51 @@ class ChatPanel:
         win.withdraw()
         win.title(f"Chat — {self.p.character['name']}")
         win.geometry(f"{self.WIDTH}x{self.HEIGHT}")
-        win.minsize(320, 380)
+        win.minsize(360, 440)
         win.protocol("WM_DELETE_WINDOW", self.hide)
         try:
             win.attributes("-topmost", True)
         except Exception:
             pass
         win.grid_columnconfigure(0, weight=1)
-        win.grid_rowconfigure(1, weight=1)
+        win.grid_rowconfigure(2, weight=1)
+        self.win = win
 
+        # header: status light, name, controls
         head = t.tag(ctk.CTkFrame(win, corner_radius=0), "sidebar")
         head.grid(row=0, column=0, sticky="ew")
-        head.grid_columnconfigure(0, weight=1)
-        self.name_label = t.tag(ctk.CTkLabel(head, text=self.p.character["name"], anchor="w"), "title", font_size=16)
-        self.name_label.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 0))
-        self.status_label = t.tag(ctk.CTkLabel(head, text="Idle", anchor="w"), "muted")
-        self.status_label.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+        head.grid_columnconfigure(1, weight=1)
+        self.dot = t.tag(tk.Canvas(head, width=14, height=14, bd=0, highlightthickness=0), "transparent")
+        self.dot.grid(row=0, column=0, rowspan=2, padx=(14, 6))
+        self.name_label = t.tag(ctk.CTkLabel(head, text=self.p.character["name"], anchor="w"), "title", font_size=17)
+        self.name_label.grid(row=0, column=1, sticky="ew", pady=(10, 0))
+        self.status_label = t.tag(ctk.CTkLabel(head, text="Idle", anchor="w", height=18), "muted")
+        self.status_label.grid(row=1, column=1, sticky="ew", pady=(0, 10))
         buttons = t.tag(ctk.CTkFrame(head, fg_color="transparent"), "transparent")
-        buttons.grid(row=0, column=1, rowspan=2, padx=8)
-        self.mute_btn = t.tag(ctk.CTkButton(buttons, text="", width=64, height=26, command=self.p.toggle_mute),
-                              "secondary")
-        self.mute_btn.pack(side="left", padx=2)
-        t.tag(ctk.CTkButton(buttons, text="Stop", width=50, height=26, command=self.p.stop_all), "ghost").pack(
+        buttons.grid(row=0, column=2, rowspan=2, padx=(4, 10))
+        self.mic_btn = t.tag(ctk.CTkButton(buttons, text="🎙", width=36, height=30, command=self.p.toggle_voice_chat),
+                             "secondary")
+        self.mic_btn.pack(side="left", padx=2)
+        self.me_btn = t.tag(ctk.CTkButton(buttons, text="Mute me", width=74, height=30,
+                                          command=self.p.toggle_mic_mute), "ghost")
+        self.voice_btn = t.tag(ctk.CTkButton(buttons, text="🔊", width=36, height=30, command=self.toggle_voice_row),
+                               "secondary")
+        self.voice_btn.pack(side="left", padx=2)
+        t.tag(ctk.CTkButton(buttons, text="■", width=32, height=30, command=self.p.stop_all), "ghost").pack(
             side="left", padx=2)
+        t.tag(ctk.CTkButton(buttons, text="⏻", width=32, height=30, command=self.p.power_off), "danger").pack(
+            side="left", padx=(2, 0))
 
+        # voice settings (collapsible)
+        self.voice_row = t.tag(ctk.CTkFrame(win), "card")
+        self.voice_row.grid_columnconfigure(1, weight=1)
+
+        # transcript
         self.log = ctk.CTkTextbox(win, wrap="word", font=t.font(13))
-        self.log.grid(row=1, column=0, sticky="nsew", padx=10, pady=(10, 6))
+        self.log.grid(row=2, column=0, sticky="nsew", padx=10, pady=(10, 6))
         self.log.configure(state="disabled")
 
+        # brain download (offline AI)
         self.setup_row = t.tag(ctk.CTkFrame(win), "card")
         self.setup_row.grid_columnconfigure(0, weight=1)
         self.setup_label = t.tag(ctk.CTkLabel(self.setup_row, text="", anchor="w", justify="left",
@@ -2132,12 +2795,11 @@ class ChatPanel:
         self.setup_bar = ctk.CTkProgressBar(self.setup_row, height=6)
         self.setup_bar.set(0)
 
-        self.attach_row = t.tag(ctk.CTkFrame(win), "card")
-        self.attach_label = t.tag(ctk.CTkLabel(self.attach_row, text="", anchor="w", compound="left"), "accent2")
-        self.attach_label.pack(side="left", padx=8, pady=6, fill="x", expand=True)
-        t.tag(ctk.CTkButton(self.attach_row, text="Remove", width=70, height=26,
-                            command=self.p.clear_attachment), "ghost").pack(side="right", padx=6)
+        # voice add-on download offer (voice chat / neural voices)
+        self.addon_row = t.tag(ctk.CTkFrame(win), "card")
+        self.addon_row.grid_columnconfigure(0, weight=1)
 
+        # memory suggestion
         self.memory_row = t.tag(ctk.CTkFrame(win), "card")
         self.memory_label = t.tag(ctk.CTkLabel(self.memory_row, text="", anchor="w", justify="left",
                                                wraplength=self.WIDTH - 170), "text")
@@ -2147,52 +2809,189 @@ class ChatPanel:
         ctk.CTkButton(self.memory_row, text="Save", width=56, height=26,
                       command=lambda: self._resolve_memory(True)).pack(side="right", padx=4)
 
+        # attached images
+        self.attach_row = t.tag(ctk.CTkFrame(win), "card")
+        self.attach_tiles = t.tag(ctk.CTkFrame(self.attach_row, fg_color="transparent"), "transparent")
+        self.attach_tiles.pack(side="top", fill="x", padx=8, pady=(8, 2))
+        self.attach_note = t.tag(ctk.CTkLabel(self.attach_row, text="", anchor="w", height=18), "muted")
+        self.attach_note.pack(side="top", fill="x", padx=10, pady=(0, 6))
+
+        # tools + entry
         tools = t.tag(ctk.CTkFrame(win, fg_color="transparent"), "transparent")
-        tools.grid(row=5, column=0, sticky="ew", padx=10)
-        self.shot_btn = t.tag(ctk.CTkButton(tools, text="Screenshot", width=96, height=26,
+        tools.grid(row=8, column=0, sticky="ew", padx=10)
+        self.shot_btn = t.tag(ctk.CTkButton(tools, text="Screenshot", width=92, height=26,
                                             command=lambda: self.p.share_screen()), "secondary")
         self.shot_btn.pack(side="left")
-        self.window_btn = t.tag(ctk.CTkButton(tools, text="Share a window…", width=120, height=26,
+        self.window_btn = t.tag(ctk.CTkButton(tools, text="Window…", width=78, height=26,
                                               command=self.p.choose_window), "secondary")
-        self.window_btn.pack(side="left", padx=6)
-        t.tag(ctk.CTkButton(tools, text="New chat", width=80, height=26, command=self.p.new_chat), "ghost").pack(
+        self.window_btn.pack(side="left", padx=4)
+        t.tag(ctk.CTkButton(tools, text="Image…", width=70, height=26, command=self.p.pick_image_files),
+              "secondary").pack(side="left")
+        t.tag(ctk.CTkButton(tools, text="New chat", width=76, height=26, command=self.p.new_chat), "ghost").pack(
             side="right")
 
         entry_row = t.tag(ctk.CTkFrame(win, fg_color="transparent"), "transparent")
-        entry_row.grid(row=6, column=0, sticky="ew", padx=10, pady=(6, 10))
+        entry_row.grid(row=9, column=0, sticky="ew", padx=10, pady=(6, 10))
         entry_row.grid_columnconfigure(0, weight=1)
-        self.entry = ctk.CTkEntry(entry_row, height=36, placeholder_text=f"Message {self.p.character['name']}…")
+        self.entry = ctk.CTkEntry(entry_row, height=38,
+                                  placeholder_text=f"Message {self.p.character['name']}…  (Ctrl+V pastes images)")
         self.entry.grid(row=0, column=0, sticky="ew")
         self.entry.bind("<Return>", lambda _e: self._send())
-        ctk.CTkButton(entry_row, text="Send", width=70, height=36, command=self._send).grid(row=0, column=1, padx=(6, 0))
-
-        self.win = win
+        self.entry.bind("<<Paste>>", self._paste)
+        win.bind("<Control-v>", self._paste_window, add="+")
+        ctk.CTkButton(entry_row, text="Send", width=70, height=38, command=self._send).grid(row=0, column=1,
+                                                                                          padx=(6, 0))
         ctx.theme.apply(win)
         self.apply_theme()
         self.refresh_controls()
+        ctx.register_drop_target(win, self.p.on_chat_drop, accept=("files", "text"))
 
     def apply_theme(self) -> None:
         if self.win is None:
             return
         p = self.p.ctx.theme.palette
         try:
-            self.log.tag_config("you", foreground=p["accent"])
-            self.log.tag_config("them", foreground=p["accent2"])
-            self.log.tag_config("sys", foreground=p["text_muted"])
+            self.log.tag_config("you", foreground=p["accent"], spacing1=10)
+            self.log.tag_config("them", foreground=p["accent2"], spacing1=10)
+            self.log.tag_config("body", lmargin1=10, lmargin2=10, spacing3=2)
+            self.log.tag_config("sys", foreground=p["text_muted"], spacing1=6, spacing3=4)
         except Exception:
             pass
+        self.refresh_mic()
 
     def refresh_controls(self) -> None:
         if self.win is None:
             return
-        muted = self.p.settings.get("muted") or not self.p.perm("voice")
-        self.mute_btn.configure(text="Unmute" if muted else "Mute",
-                                state="normal" if self.p.perm("voice") and self.p.speech.available else "disabled")
         state = "normal" if self.p.perm("screen") else "disabled"
         self.shot_btn.configure(state=state)
         self.window_btn.configure(state=state if IS_WINDOWS else "disabled")
         self.name_label.configure(text=self.p.character["name"])
         self.win.title(f"Chat — {self.p.character['name']}")
+        self.voice_btn.configure(text="🔇" if self.p.settings["muted"] or not self.p.perm("voice") else "🔊")
+        self.mic_btn.configure(state="normal" if self.p.perm("mic") else "disabled")
+        self.refresh_mic()
+        if self._voice_open:
+            self._build_voice_row()
+
+    MIC_TEXT = {"loading": "Starting voice chat…", "listening": "Listening — just talk",
+                "hearing": "Hearing you…", "paused": "Listening paused while I talk",
+                "muted": "Your mic is muted"}
+
+    def refresh_mic(self) -> None:
+        if self.win is None:
+            return
+        t = self.p.ctx.theme
+        p = t.palette
+        state = self.p.listener.state
+        on = state != "off"
+        try:
+            t.tag(self.mic_btn, "accent" if on else "secondary")
+            t.apply(self.mic_btn)
+            if on:
+                self.me_btn.pack(side="left", padx=2, after=self.mic_btn)
+                self.me_btn.configure(text="Unmute me" if self.p.listener.muted else "Mute me")
+            else:
+                self.me_btn.pack_forget()
+            color = {"listening": p["accent"], "hearing": p["success"], "loading": p["warning"],
+                     "paused": p["accent2"], "muted": p["danger"]}.get(state, p["text_muted"])
+            if self.p.avatar.mode == "speaking":
+                color = p["accent2"]
+            self.dot.delete("all")
+            self.dot.create_oval(2, 2, 12, 12, fill=color, outline="")
+            if on:
+                self.status_label.configure(text=self.MIC_TEXT.get(state, ""))
+        except Exception:
+            pass
+
+    # ── voice settings popover ───────────────────────────────────────────
+    def toggle_voice_row(self) -> None:
+        if self.win is None:
+            return
+        self._voice_open = not self._voice_open
+        if self._voice_open:
+            self._build_voice_row()
+            self.voice_row.grid(row=1, column=0, sticky="ew", padx=10, pady=(10, 0))
+        else:
+            self.voice_row.grid_remove()
+
+    def _build_voice_row(self) -> None:
+        t = self.p.ctx.theme
+        row = self.voice_row
+        for child in row.winfo_children():
+            if getattr(child, "_mt_role", None) != "skip":  # keep the theme's frame decorations
+                child.destroy()
+        p = self.p
+        speak = ctk.BooleanVar(value=not p.settings["muted"] and p.perm("voice"))
+        ctk.CTkSwitch(row, text="Speak replies", variable=speak,
+                      command=lambda: p.set_muted(not speak.get())).grid(row=0, column=0, columnspan=2, sticky="w",
+                                                                          padx=10, pady=(8, 4))
+        engines = {"Neural": "neural", "Windows": "windows"}
+        current = p.voice_config()["engine"]
+        seg = ctk.CTkSegmentedButton(row, values=list(engines), width=150,
+                                     command=lambda v: (p.set_setting("voice_engine", engines[v]),
+                                                        self._build_voice_row(), p.refresh_voice_ui()))
+        seg.set("Neural" if current == "neural" else "Windows")
+        seg.grid(row=0, column=2, sticky="e", padx=10, pady=(8, 4))
+
+        t.tag(ctk.CTkLabel(row, text="Voice", width=52, anchor="w"), "muted").grid(row=1, column=0, sticky="w",
+                                                                                    padx=(10, 0))
+        names, selected, setter = p.voice_choices()
+        menu = ctk.CTkOptionMenu(row, values=names or ["(no voices)"], width=210, dynamic_resizing=False,
+                                 command=lambda v: (setter(v), p.refresh_voice_ui()))
+        menu.set(selected or (names[0] if names else "(no voices)"))
+        menu.grid(row=1, column=1, sticky="ew", pady=3)
+        t.tag(ctk.CTkButton(row, text="▶ Try", width=60, height=28, command=p.preview_voice), "secondary").grid(
+            row=1, column=2, sticky="e", padx=10)
+
+        t.tag(ctk.CTkLabel(row, text="Speed", width=52, anchor="w"), "muted").grid(row=2, column=0, sticky="w",
+                                                                                    padx=(10, 0))
+        value = t.tag(ctk.CTkLabel(row, text="", width=46), "text")
+        lo, hi = SPEED_RANGE
+        slider = ctk.CTkSlider(row, from_=lo, to=hi, number_of_steps=int(round((hi - lo) / 0.05)))
+        speed = p.voice_speed()
+        slider.set(speed)
+        value.configure(text=f"{speed:.2f}×")
+
+        def moved(v: float) -> None:
+            value.configure(text=f"{float(v):.2f}×")
+            p.set_setting("voice_speed", round(float(v), 2))
+        slider.configure(command=moved)
+        slider.grid(row=2, column=1, sticky="ew", pady=(3, 8))
+        value.grid(row=2, column=2, sticky="e", padx=10, pady=(3, 8))
+        if current != "neural" and not p.addons.installed("voices"):
+            self._addon_offer(row, 3, "voices")
+        t.apply(row)
+
+    def _addon_offer(self, parent: Any, row: int, key: str) -> None:
+        t = self.p.ctx.theme
+        info = VOICE_ADDONS[key]
+        box = t.tag(ctk.CTkFrame(parent, fg_color="transparent"), "transparent")
+        box.grid(row=row, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 8))
+        box.grid_columnconfigure(0, weight=1)
+        label = t.tag(ctk.CTkLabel(box, text=f"{info['name']}: {info['about']}", anchor="w", justify="left",
+                                   wraplength=self.WIDTH - 140), "muted")
+        label.grid(row=0, column=0, sticky="ew")
+        button = ctk.CTkButton(box, text="Download", width=96, height=28,
+                               command=lambda: self.p.start_addon_download(key))
+        button.grid(row=0, column=1, padx=(8, 0))
+        bar = ctk.CTkProgressBar(box, height=6)
+        bar.set(0)
+        self.addon_widgets[key] = {"label": label, "button": button, "bar": bar}
+        self.p.update_addon_ui(key)
+
+    def offer_addon(self, key: str) -> None:
+        if self.win is None:
+            self._build()
+        for child in self.addon_row.winfo_children():
+            if getattr(child, "_mt_role", None) != "skip":
+                child.destroy()
+        self._addon_offer(self.addon_row, 0, key)
+        self.p.ctx.theme.apply(self.addon_row)
+        self.addon_row.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 6))
+
+    def hide_addon(self) -> None:
+        if self.win is not None:
+            self.addon_row.grid_remove()
 
     # ── open / close / placement ─────────────────────────────────────────
     def show(self) -> None:
@@ -2232,17 +3031,18 @@ class ChatPanel:
         self.win.geometry(f"{self.WIDTH}x{self.HEIGHT}+{int(x)}+{int(y)}")
 
     # ── transcript ───────────────────────────────────────────────────────
-    def _write(self, text: str, tag: str | None = None) -> None:
+    def _write(self, text: str, *tags: str) -> None:
         if self.win is None:
             self._build()
         self.log.configure(state="normal")
-        self.log.insert("end", text, tag) if tag else self.log.insert("end", text)
+        self.log.insert("end", text, tags) if tags else self.log.insert("end", text)
         self.log.see("end")
         self.log.configure(state="disabled")
 
-    def add_user(self, text: str, with_image: bool) -> None:
-        self._write("\nYou\n", "you")
-        self._write(text + ("  [screenshot attached]" if with_image else "") + "\n")
+    def add_user(self, text: str, images: int = 0, spoken: bool = False) -> None:
+        self._write("\n" + ("You 🎙" if spoken else "You") + "\n", "you")
+        note = f"  [{images} image{'s' if images != 1 else ''} attached]" if images else ""
+        self._write(text + note + "\n", "body")
 
     def begin_reply(self) -> None:
         self._write(f"\n{self.p.character['name']}\n", "them")
@@ -2250,7 +3050,7 @@ class ChatPanel:
 
     def stream(self, text: str) -> None:
         if text:
-            self._write(text)
+            self._write(text, "body")
 
     def end_reply(self) -> None:
         if self._streaming:
@@ -2269,21 +3069,48 @@ class ChatPanel:
 
     def set_status(self, text: str) -> None:
         if self.win is not None:
+            if self.p.listener.state != "off" and text in ("Idle", ""):
+                text = self.MIC_TEXT.get(self.p.listener.state, text)
             self.status_label.configure(text=text)
+            self.refresh_mic()
 
-    def show_attachment(self, image: Any | None, label: str) -> None:
+    # ── attachments ──────────────────────────────────────────────────────
+    def show_attachments(self, items: list[dict[str, Any]]) -> None:
         if self.win is None:
             self._build()
-        if image is None:
+        t = self.p.ctx.theme
+        for child in self.attach_tiles.winfo_children():
+            child.destroy()
+        self._thumbs = []
+        if not items:
             self.attach_row.grid_remove()
-            self._preview_image = None
             return
-        thumb = image.copy()
-        thumb.thumbnail((96, 54))
-        self._preview_image = ctk.CTkImage(light_image=thumb, dark_image=thumb, size=thumb.size)
-        self.attach_label.configure(image=self._preview_image, text=f"  {label} — sent with your next message")
-        self.attach_row.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 6))
+        for index, item in enumerate(items):
+            tile = t.tag(ctk.CTkFrame(self.attach_tiles, width=84, height=60), "entry")
+            tile.pack(side="left", padx=(0, 6))
+            tile.pack_propagate(False)
+            thumb = item["thumb"]
+            image = ctk.CTkImage(light_image=thumb, dark_image=thumb, size=thumb.size)
+            self._thumbs.append(image)
+            t.tag(ctk.CTkLabel(tile, text="", image=image), "transparent").place(relx=0.5, rely=0.5, anchor="center")
+            t.tag(ctk.CTkButton(tile, text="✕", width=20, height=20, corner_radius=10,
+                                command=lambda i=index: self.p.remove_attachment(i)), "danger").place(
+                relx=1.0, rely=0.0, anchor="ne", x=-2, y=2)
+        count = len(items)
+        self.attach_note.configure(text=f"{count} image{'s' if count != 1 else ''} · sent with your next message"
+                                        f"{'' if count < MAX_IMAGES else '  (max)'}")
+        t.apply(self.attach_row)
+        self.attach_row.grid(row=6, column=0, sticky="ew", padx=10, pady=(0, 6))
 
+    def _paste(self, _event: Any = None) -> Any:
+        return "break" if self.p.paste_from_clipboard() else None
+
+    def _paste_window(self, event: Any) -> Any:
+        if event.widget is not None and "entry" in str(event.widget).lower():
+            return None  # the entry's own <<Paste>> handler deals with it
+        return self._paste(event)
+
+    # ── offline-brain setup row ──────────────────────────────────────────
     def offer_setup(self, plugin: "Plugin") -> None:
         """One-click download of the offline brain, right inside the chat."""
         if self.win is None:
@@ -2296,11 +3123,11 @@ class ChatPanel:
                                             f"(about {info['approx_gb']:.1f} GB, one-time download, then fully offline).")
             self.setup_btn.configure(text="Download", command=plugin.start_download, state="normal")
             self.setup_bar.grid_remove()
-        self.setup_row.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 6))
+        self.setup_row.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 6))
         self._setup_visible = True
 
     def update_setup_progress(self, text: str, fraction: float | None) -> None:
-        if self.win is None or not getattr(self, "_setup_visible", False):
+        if self.win is None or not self._setup_visible:
             return
         if fraction is None:
             self.setup_bar.grid_remove()
@@ -2318,6 +3145,7 @@ class ChatPanel:
             self.setup_row.grid_remove()
         self._setup_visible = False
 
+    # ── memory suggestions ───────────────────────────────────────────────
     def offer_memories(self, memories: list[str]) -> None:
         self._pending_memories.extend(memories)
         self._next_memory()
@@ -2329,7 +3157,7 @@ class ChatPanel:
             self.memory_row.grid_remove()
             return
         self.memory_label.configure(text=f"Remember this?  “{self._pending_memories[0]}”")
-        self.memory_row.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 6))
+        self.memory_row.grid(row=5, column=0, sticky="ew", padx=10, pady=(0, 6))
 
     def _resolve_memory(self, save: bool) -> None:
         if self._pending_memories:
@@ -2340,7 +3168,7 @@ class ChatPanel:
 
     def _send(self) -> None:
         text = self.entry.get().strip()
-        if not text and not self.p.attachment:
+        if not text and not self.p.attachments:
             return
         self.entry.delete(0, "end")
         self.p.send_message(text)
@@ -2357,7 +3185,7 @@ SETTING_DEFAULTS: dict[str, Any] = {
     "walk": True,
     "reduced_motion": False,
     "greet": True,
-    "show_on_start": True,
+    "power_on_start": False,     # Juno only runs when you switch her on
     "dnd": False,
     "home": None,
     "anchor": "right",
@@ -2370,8 +3198,10 @@ SETTING_DEFAULTS: dict[str, Any] = {
     "model": "claude-haiku-5-5",
     "base_url": "",
     "api_key": "",
+    "voice_engine": "auto",      # auto (neural when downloaded) | neural | windows
+    "neural_voice": "",          # Kokoro voice id; "" = the character's choice
+    "voice_speed": None,         # 0.6..1.6; None = the character's default
     "voice_name": "",
-    "voice_rate": 0,
     "voice_pitch": 0,
     "voice_volume": 0,
     "muted": False,
@@ -2379,15 +3209,18 @@ SETTING_DEFAULTS: dict[str, Any] = {
     "perm_memory": True,
     "perm_voice": True,
     "perm_proactive": True,
+    "perm_mic": True,
 }
 SIZES = {"S": 0.8, "M": 1.0, "L": 1.25}
+MAX_IMAGES = 4
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 
 
 class Plugin:
     meta_title = "Desktop Companion"
-    meta_description = ("A character who lives on your desktop, powered by a small AI that runs offline on your PC. "
-                        "Chat, hear replies spoken, share a screenshot for a second pair of eyes, and swap in new "
-                        "characters as packs.")
+    meta_description = ("A character for your desktop, powered by a small AI that runs offline on your PC. Switch her "
+                        "on when you want company: chat or talk out loud, paste or share images, pick a natural voice "
+                        "and speed, and swap in new characters as packs.")
     meta_icon = "☺"
     meta_order = 20
     meta_api_version = 1
@@ -2400,7 +3233,8 @@ class Plugin:
         self.memories: list[dict[str, Any]] = self._load_memories()
         self.speech = SpeechEngine(ctx.log)
         self.history: list[dict[str, Any]] = []
-        self.attachment: tuple[str, str] | None = None
+        self.attachments: list[dict[str, Any]] = []
+        self.powered = False
         self._busy = False
         self._cancel = threading.Event()
         self._speech_files: list[Path] = []
@@ -2412,6 +3246,12 @@ class Plugin:
             if IS_WINDOWS and os.environ.get("LOCALAPPDATA") else ctx.data_dir / "models"
         self.models = ModelManager(local_root, ctx.log)
         self.engine = LocalEngine(self)
+        self.addons = AddonManager(local_root, ctx.log)
+        self.neural = NeuralVoice(self.addons.folder("voices"), ctx.log)
+        self.voice_out = VoiceOut(self)
+        self.listener = VoiceChat(self)
+        self._addon_cancel: threading.Event | None = None
+        self._addon_state: dict[str, dict[str, Any]] = {}
         self._download_cancel: threading.Event | None = None
         self._download_state: dict[str, Any] = {}
         if self.settings["local_size"] not in LOCAL_MODELS:
@@ -2432,8 +3272,8 @@ class Plugin:
         if self.speech.available:
             ctx.run_in_thread(self.speech.list_voices, on_done=lambda _v: self._refresh_voice_menu(),
                               on_error=lambda _e: None)
-        if self.settings["show_on_start"]:
-            ctx.app.after(800, self._startup)
+        if self.settings["power_on_start"]:
+            ctx.app.after(800, self.power_on)
 
     def _import_bundled_characters(self) -> None:
         """Packs shipped by the installer in <app>/extras/characters are imported once each."""
@@ -2579,7 +3419,50 @@ class Plugin:
             self.ctx.log.info("Unloading the local AI after %s idle minutes", minutes)
             self.ctx.run_in_thread(self.engine.stop)
 
-    # ── lifecycle ─────────────────────────────────────────────────────────
+    # ── power: Juno only exists on screen (and uses memory) while switched on ──
+    def power_on(self) -> None:
+        if self.powered:
+            self.avatar.show()
+            return
+        self.powered = True
+        self.ctx.log.info("%s switched on", self.character["name"])
+        self._startup()
+        self._refresh_page(rebuild=True)
+        self.ctx.set_status(f"{self.character['name']} is on — right-click her for options.", "success")
+
+    def power_off(self) -> None:
+        if not self.powered:
+            return
+        self.powered = False
+        self.ctx.log.info("%s shut down", self.character["name"])
+        self._cancel.set()
+        self.listener.unload()
+        self.voice_out.stop()
+        self.speech.stop()
+        self.avatar.stop_speaking()
+        self.chat.hide()
+        self.avatar.hide()
+        if self._quip_after is not None:
+            try:
+                self.ctx.app.after_cancel(self._quip_after)
+            except Exception:
+                pass
+            self._quip_after = None
+        self.ctx.run_in_thread(self._release_engines)
+        self._refresh_page(rebuild=True)
+        self.ctx.set_status(f"{self.character['name']} is shut down — nothing of hers is running.")
+
+    def _release_engines(self) -> None:
+        self.engine.stop()
+        self.neural.unload()
+
+    def toggle_power(self) -> None:
+        self.power_off() if self.powered else self.power_on()
+
+    def open_chat(self) -> None:
+        self.power_on()
+        self.chat.show()
+
     def _startup(self) -> None:
         self.avatar.show()
         if self.settings["greet"] and self.perm("proactive") and not self.settings["dnd"]:
@@ -2601,7 +3484,8 @@ class Plugin:
     def _quip(self) -> None:
         self._quip_after = None
         lines = self.character["persona"]["idle_lines"]
-        if (lines and self.avatar.visible and self.settings["activity"] == "chatty" and self.perm("proactive")
+        if (lines and self.powered and self.avatar.visible and self.settings["activity"] == "chatty"
+                and self.perm("proactive")
                 and not self.settings["dnd"] and not self._busy and not self.chat.is_open):
             self.avatar.say(random.choice(lines), 6)
             self.avatar.set_expression("pleased", 2)
@@ -2610,6 +3494,10 @@ class Plugin:
     def shutdown(self) -> None:
         self._cancel.set()
         self.cancel_download()
+        if self._addon_cancel is not None:
+            self._addon_cancel.set()
+        self.listener.unload()
+        self.voice_out.stop()
         self.speech.stop()
         try:
             self.ctx.app.after_cancel(self._idle_after)
@@ -2633,6 +3521,7 @@ class Plugin:
 
     # ── avatar controls ───────────────────────────────────────────────────
     def show_avatar(self) -> None:
+        self.power_on()
         self.avatar.show()
         self._refresh_page()
 
@@ -2666,6 +3555,8 @@ class Plugin:
             pass
 
     def on_chat_opened(self) -> None:
+        if not self.powered:
+            self.power_on()
         self.avatar.set_expression("pleased", 1.5)
         self.chat.reposition()
         if self.settings["provider"] == "local":
@@ -2675,16 +3566,302 @@ class Plugin:
                 self.warm_up()
 
     def toggle_mute(self) -> None:
-        self.set_setting("muted", not self.settings["muted"])
-        if self.settings["muted"]:
+        self.set_muted(not self.settings["muted"])
+
+    def set_muted(self, muted: bool) -> None:
+        self.set_setting("muted", bool(muted))
+        if muted:
+            self.voice_out.stop()
             self.speech.stop()
             self.avatar.stop_speaking()
+        elif not self.perm("voice"):
+            self.set_setting("perm_voice", True)
         self.chat.refresh_controls()
 
     def stop_all(self) -> None:
         self._cancel.set()
+        self.voice_out.stop()
         self.speech.stop()
         self.avatar.stop_speaking()
+
+    # ── voice: engine choice, speed, previews ─────────────────────────────
+    def neural_ready(self) -> bool:
+        return self.addons.installed("voices") and sherpa_ok()
+
+    def voice_speed(self) -> float:
+        value = self.settings.get("voice_speed")
+        if value is None:
+            value = self.character["voice"].get("speed", 1.1)
+        try:
+            return max(SPEED_RANGE[0], min(SPEED_RANGE[1], float(value)))
+        except (TypeError, ValueError):
+            return 1.1
+
+    def voice_config(self) -> dict[str, Any]:
+        voice = self.character["voice"]
+        choice = self.settings.get("voice_engine", "auto")
+        if choice == "windows" and self.speech.available:
+            engine = "windows"
+        else:
+            engine = "neural" if self.neural_ready() else "windows"
+        speed = self.voice_speed()
+        neural_voice = self.settings.get("neural_voice") or voice.get("kokoro") or "af_heart"
+        rate = int(voice.get("rate", 0)) + round(math.log(speed) / math.log(1.12))
+        return {
+            "engine": engine,
+            "voice": neural_voice if neural_voice in KOKORO_SID else "af_heart",
+            "speed": speed,
+            "sapi_voice": self.speech.pick(self.settings.get("voice_name") or "", voice.get("prefer", [])),
+            "sapi_rate": max(-10, min(10, rate)),
+            "sapi_pitch": int(voice.get("pitch", 0)) + int(self.settings.get("voice_pitch") or 0),
+            "sapi_volume": max(0, min(100, int(voice.get("volume", 90)) + int(self.settings.get("voice_volume") or 0))),
+        }
+
+    def voice_choices(self) -> tuple[list[str], str, Callable[[str], None]]:
+        """(menu labels, current label, setter) for whichever engine is active."""
+        config = self.voice_config()
+        if config["engine"] == "neural" or (self.settings.get("voice_engine") == "neural"):
+            labels = [label for _k, _s, label in KOKORO_VOICES]
+            return labels, KOKORO_LABEL.get(config["voice"], labels[0]), \
+                lambda label: self.set_setting("neural_voice", KOKORO_BY_LABEL.get(label, ""))
+        default = "Character default"
+        labels = [default] + self.speech.voices
+        return labels, self.settings.get("voice_name") or default, \
+            lambda label: self.set_setting("voice_name", "" if label == default else label)
+
+    def can_speak(self) -> bool:
+        return self.perm("voice") and not self.settings["muted"] and (self.speech.available or self.neural_ready())
+
+    def preview_voice(self) -> None:
+        if self.settings.get("voice_engine") == "neural" and not self.neural_ready():
+            self.chat.offer_addon("voices")
+            return
+        lines = self.character["persona"]["greetings"] or ["Testing, one two."]
+        self.voice_out.say(random.choice(lines))
+
+    def voice_problem(self, message: str) -> None:
+        self.ctx.set_status(f"Neural voice unavailable ({message}) — using a Windows voice.", "warning")
+
+    def refresh_voice_ui(self) -> None:
+        self.chat.refresh_controls()
+        if self._built and getattr(self, "_tabs", None) is not None:
+            try:
+                if self._tabs.get() == "AI & Voice":
+                    self._refresh_page(rebuild=True)
+            except Exception:
+                pass
+
+    # ── voice add-on downloads (neural voices, voice chat) ────────────────
+    def start_addon_download(self, key: str) -> None:
+        if self.addons.downloading:
+            return
+        if not sherpa_ok():
+            self.ctx.set_status("The voice engine isn't in this build — update Multi-Tool first.", "error")
+            return
+        self.addons.downloading = key
+        cancel = self._addon_cancel = threading.Event()
+        self._addon_state[key] = {"done": 0, "total": self.addons.total(key), "error": ""}
+        self.update_addon_ui(key)
+
+        def progress(done: int, total: int) -> None:
+            self._addon_state[key].update(done=done, total=total)
+            self.ctx.call_in_ui(self.update_addon_ui, key)
+
+        def done(_r: Any) -> None:
+            self.addons.downloading = None
+            self.ctx.set_status(f"{VOICE_ADDONS[key]['name']} installed", "success")
+            self.ctx.notify(f"{VOICE_ADDONS[key]['name']} ready", "Downloaded and working offline.",
+                            subtitle=self.character["name"], icon="♪")
+            self.chat.hide_addon()
+            self.update_addon_ui(key)
+            if key == "voices" and self.settings.get("voice_engine") != "windows":
+                self.set_setting("voice_engine", "auto")
+            self.refresh_voice_ui()
+            self._refresh_page(rebuild=True)
+            if key == "listen" and self.powered and self._want_voice_chat:
+                self.toggle_voice_chat()
+
+        def failed(exc: BaseException) -> None:
+            self.addons.downloading = None
+            self._addon_state[key]["error"] = str(exc) if isinstance(exc, ProviderError) else f"Download failed: {exc}"
+            self.ctx.set_status(self._addon_state[key]["error"], "warning" if cancel.is_set() else "error")
+            self.update_addon_ui(key)
+
+        self.ctx.run_in_thread(self.addons.download, key, progress, cancel, on_done=done, on_error=failed)
+
+    def cancel_addon_download(self) -> None:
+        if self._addon_cancel is not None:
+            self._addon_cancel.set()
+
+    def delete_addon(self, key: str) -> None:
+        if self.addons.downloading == key:
+            return
+        if key == "listen":
+            self.listener.unload()
+        else:
+            self.neural.unload()
+        self.addons.delete(key)
+        self.ctx.set_status(f"{VOICE_ADDONS[key]['name']} removed", "success")
+        self.refresh_voice_ui()
+        self._refresh_page(rebuild=True)
+
+    def addon_text(self, key: str) -> str:
+        st = self._addon_state.get(key, {})
+        if self.addons.downloading == key:
+            done, total = st.get("done", 0), max(1, st.get("total", 1))
+            return f"Downloading {VOICE_ADDONS[key]['name'].lower()}…  {done / 1024 ** 2:.0f} / " \
+                   f"{total / 1024 ** 2:.0f} MB ({done * 100 // total}%)"
+        if st.get("error"):
+            return st["error"]
+        if self.addons.installed(key):
+            return f"{VOICE_ADDONS[key]['name']} installed — works offline."
+        return f"{VOICE_ADDONS[key]['name']}: {VOICE_ADDONS[key]['about']}"
+
+    def update_addon_ui(self, key: str) -> None:
+        st = self._addon_state.get(key, {})
+        downloading = self.addons.downloading == key
+        frac = st.get("done", 0) / max(1, st.get("total", 1)) if downloading else 0
+        for widgets in (self.chat.addon_widgets.get(key), getattr(self, "_addon_widgets", {}).get(key)):
+            if not widgets:
+                continue
+            try:
+                widgets["label"].configure(text=self.addon_text(key))
+                if downloading:
+                    widgets["bar"].set(frac)
+                    widgets["bar"].grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+                    widgets["button"].configure(text="Pause", command=self.cancel_addon_download, state="normal")
+                else:
+                    widgets["bar"].grid_remove()
+                    if self.addons.installed(key):
+                        widgets["button"].configure(text="Remove", command=lambda k=key: self.delete_addon(k))
+                    else:
+                        widgets["button"].configure(text="Resume" if st.get("error") else "Download",
+                                                    command=lambda k=key: self.start_addon_download(k),
+                                                    state="disabled" if self.addons.downloading else "normal")
+            except Exception:
+                pass
+
+    # ── voice chat (microphone) ───────────────────────────────────────────
+    _want_voice_chat = False
+
+    def toggle_voice_chat(self) -> None:
+        if self.listener.state != "off":
+            self._want_voice_chat = False
+            self.listener.stop()
+            self.chat.set_status("Voice chat off")
+            self.chat.refresh_mic()
+            return
+        if not self.perm("mic"):
+            self.ctx.set_status("Voice chat is turned off in Companion ▸ Permissions.", "warning")
+            return
+        self._want_voice_chat = True
+        self.power_on()
+        if not self.chat.is_open:
+            self.chat.show()
+        ok, why = self.listener.available()
+        if not ok:
+            if why == "download":
+                self.chat.offer_addon("listen")
+                self.chat.system("Voice chat needs a one-time download (about 110 MB) — press Download above. "
+                                 "After that it runs entirely on your PC.")
+            else:
+                self.chat.system(f"Voice chat isn't available: {why}.")
+            return
+        if self.settings["muted"]:
+            self.set_muted(False)
+            self.chat.system("Voice replies switched on for voice chat.")
+
+        def ready() -> None:
+            self.chat.system("🎙 Voice chat on — just talk. I pause listening while I'm speaking. "
+                             "Use “Mute me” to stop me hearing you.")
+            self.chat.refresh_mic()
+
+        def error(message: str) -> None:
+            self._want_voice_chat = False
+            self.chat.system(message)
+            self.chat.refresh_mic()
+
+        self.listener.muted = False
+        self.listener.start(ready, error)
+        self.chat.refresh_mic()
+
+    def toggle_mic_mute(self) -> None:
+        self.listener.muted = not self.listener.muted
+        self.chat.refresh_mic()
+
+    def on_heard(self, text: str) -> None:
+        if not self.powered or self.listener.state == "off" or self._busy:
+            return
+        self.voice_out.stop()
+        self.send_message(text, spoken=True)
+
+    # ── images: screenshots, pasted, dropped or picked ────────────────────
+    def add_image(self, img: Any, label: str) -> bool:
+        if len(self.attachments) >= MAX_IMAGES:
+            self.chat.system(f"Up to {MAX_IMAGES} images per message — remove one first.")
+            return False
+        try:
+            media, data = encode_image(img)
+            thumb = img.convert("RGB").copy()
+            thumb.thumbnail((80, 56))
+        except Exception as exc:
+            self.ctx.set_status(f"Couldn't use that image: {exc}", "error")
+            return False
+        self.attachments.append({"media": media, "data": data, "thumb": thumb, "label": label})
+        self.chat.show_attachments(self.attachments)
+        self.chat.set_status(f"{label} attached — sent with your next message")
+        self._refresh_status_bar()
+        return True
+
+    def remove_attachment(self, index: int) -> None:
+        if 0 <= index < len(self.attachments):
+            self.attachments.pop(index)
+        self.chat.show_attachments(self.attachments)
+        self._refresh_status_bar()
+
+    def paste_from_clipboard(self) -> bool:
+        """Ctrl+V in the chat: an image (or copied image files) becomes an attachment."""
+        if ImageGrab is None:
+            return False
+        try:
+            data = ImageGrab.grabclipboard()
+        except Exception:
+            return False
+        if Image is not None and isinstance(data, Image.Image):
+            return self.add_image(data, "Pasted image")
+        if isinstance(data, list):
+            files = [Path(f) for f in data if Path(str(f)).suffix.lower() in IMAGE_EXTENSIONS]
+            added = False
+            for f in files[:MAX_IMAGES]:
+                added = self._add_image_file(f) or added
+            return added
+        return False
+
+    def _add_image_file(self, path: Path) -> bool:
+        try:
+            with Image.open(path) as img:
+                img.load()
+                return self.add_image(img.copy(), path.name)
+        except Exception as exc:
+            self.ctx.set_status(f"Couldn't open {path.name}: {exc}", "error")
+            return False
+
+    def pick_image_files(self) -> None:
+        from tkinter import filedialog
+        names = filedialog.askopenfilenames(
+            parent=self.chat.win, title="Attach images",
+            filetypes=[("Images", " ".join(f"*{e}" for e in sorted(IMAGE_EXTENSIONS))), ("All files", "*.*")])
+        for name in names or ():
+            self._add_image_file(Path(name))
+
+    def on_chat_drop(self, payload: Any) -> None:
+        for f in payload.files:
+            if f.suffix.lower() in IMAGE_EXTENSIONS:
+                self._add_image_file(f)
+            elif f.suffix.lower() in (".mtchar",):
+                self.import_character(f)
+        if payload.text and not payload.files and self.chat.win is not None:
+            self.chat.entry.insert("end", payload.text)
 
     # ── characters ────────────────────────────────────────────────────────
     def import_character(self, src: Path) -> str:
@@ -2801,14 +3978,12 @@ class Plugin:
         t.apply(picker)
 
     def _attach(self, img: Any, label: str) -> None:
-        self.attachment = encode_image(img)
-        self.chat.show_attachment(img, label)
-        self.chat.set_status("Screen shared — attached to your next message")
+        self.add_image(img, label)
 
     def clear_attachment(self) -> None:
-        self.attachment = None
+        self.attachments = []
         if self.chat.win is not None:
-            self.chat.show_attachment(None, "")
+            self.chat.show_attachments([])
             self.chat.set_status("Idle")
 
     # ── conversation ──────────────────────────────────────────────────────
@@ -2820,16 +3995,18 @@ class Plugin:
         if not silent:
             self.chat.system("New conversation.")
 
-    def send_message(self, text: str) -> None:
+    def send_message(self, text: str, spoken: bool = False) -> None:
         if self._busy:
-            self.chat.system("Still answering the last message — press Stop to cancel it.")
+            self.chat.system("Still answering the last message — press ■ to cancel it.")
             return
+        self.power_on() if not self.powered else None
+        self.voice_out.stop()
         self.speech.stop()
         self.avatar.stop_speaking()
-        image = self.attachment if self.perm("screen") else None
-        self.history.append({"role": "user", "text": text, "image": image})
-        self.chat.add_user(text or "(screenshot)", image is not None)
-        if image is not None:
+        images = [(a["media"], a["data"]) for a in self.attachments]
+        self.history.append({"role": "user", "text": text, "images": images})
+        self.chat.add_user(text or "(image)", len(images), spoken)
+        if images:
             self.clear_attachment()
 
         provider = self.settings["provider"]
@@ -2852,7 +4029,7 @@ class Plugin:
             self.chat.stream(reply)
             self.chat.end_reply()
             self.avatar.set_expression("concerned", 4)
-            self.history.append({"role": "assistant", "text": reply, "image": None})
+            self.history.append({"role": "assistant", "text": reply, "images": []})
             return
 
         self._busy = True
@@ -2861,7 +4038,7 @@ class Plugin:
         self.avatar.mode = "thinking"
         self.chat.set_status("Thinking…")
         self.chat.begin_reply()
-        speak = self.perm("voice") and not self.settings["muted"] and self.speech.available
+        speak = self.can_speak()
         system = build_system_prompt(self.character, self.personality(), self.settings.get("instructions") or "",
                                      [m["text"] for m in self.memories], speak, self.perm("memory"))
         messages = prepare_history(self.history)
@@ -2908,7 +4085,7 @@ class Plugin:
                 self.avatar.mode = "idle"
                 self.chat.set_status("Stopped")
                 return
-            self.history.append({"role": "assistant", "text": flt.raw.strip(), "image": None})
+            self.history.append({"role": "assistant", "text": flt.raw.strip(), "images": []})
             self.avatar.mode = "idle"
             self.avatar.set_expression(expression, 6)
             if memories and self.perm("memory"):
@@ -2941,39 +4118,11 @@ class Plugin:
         self.chat.stream(text)
 
     def speak(self, text: str) -> None:
-        voice = self.character["voice"]
-        name = self.speech.pick(self.settings.get("voice_name") or "", voice["prefer"])
-        rate = voice["rate"] + int(self.settings.get("voice_rate") or 0)
-        pitch = voice["pitch"] + int(self.settings.get("voice_pitch") or 0)
-        volume = max(0, min(100, voice["volume"] + int(self.settings.get("voice_volume") or 0)))
-        out = self.temp_dir / f"speech-{uuid.uuid4().hex[:6]}.wav"
-        self.chat.set_status("Speaking…")
-
-        def work() -> tuple[Path, list[float], float]:
-            self.speech.synthesize(text, name, rate, pitch, volume, out)
-            env, duration = wav_envelope(out)
-            return out, env, duration
-
-        def done(result: tuple[Path, list[float], float]) -> None:
-            path, env, duration = result
-            if self.settings["muted"] or not self.perm("voice"):
-                return
-            self.speech.play(path)
-            self.avatar.start_speaking(env, duration)
-            self._speech_files.append(path)
-            for old in self._speech_files[:-2]:
-                try:
-                    old.unlink()
-                except OSError:
-                    pass
-            self._speech_files = self._speech_files[-2:]
-            self.ctx.app.after(int(duration * 1000) + 200, lambda: self.chat.set_status("Idle"))
-
-        def failed(exc: BaseException) -> None:
+        if not self.can_speak():
             self.chat.set_status("Idle")
-            self.ctx.log.warning("Speech failed: %s", exc)
-
-        self.ctx.run_in_thread(work, on_done=done, on_error=failed)
+            return
+        self.chat.set_status("Speaking…")
+        self.voice_out.say(text, on_done=lambda: self.chat.set_status("Idle"))
 
     # ── main-window page ──────────────────────────────────────────────────
     def get_frame(self, master: Any) -> Any:
@@ -3021,11 +4170,20 @@ class Plugin:
         self.top_status.grid(row=0, column=0, columnspan=2, sticky="ew", padx=16, pady=(12, 6))
         bar = t.tag(ctk.CTkFrame(top, fg_color="transparent"), "transparent")
         bar.grid(row=1, column=0, columnspan=2, sticky="ew", padx=16, pady=(0, 12))
-        self.show_btn = ctk.CTkButton(bar, text="", width=110, command=self._toggle_visible)
-        self.show_btn.pack(side="left")
-        t.tag(ctk.CTkButton(bar, text="Open chat", width=100, command=lambda: (self.avatar.show(), self.chat.show())),
-              "secondary").pack(side="left", padx=6)
-        t.tag(ctk.CTkButton(bar, text="Back to corner", width=120, command=self.reset_home), "ghost").pack(side="left")
+        name = self.character["name"]
+        self.power_btn = t.tag(ctk.CTkButton(bar, text=f"⏻  Shut down {name}" if self.powered else f"⏻  Switch on {name}",
+                                             width=170, height=34, command=self.toggle_power),
+                               "danger" if self.powered else "accent")
+        self.power_btn.pack(side="left")
+        t.tag(ctk.CTkButton(bar, text="Open chat", width=100, height=34, command=self.open_chat), "secondary").pack(
+            side="left", padx=6)
+        t.tag(ctk.CTkButton(bar, text="🎙 Voice chat", width=120, height=34, command=self.toggle_voice_chat),
+              "secondary").pack(side="left")
+        self.show_btn = t.tag(ctk.CTkButton(bar, text="", width=110, height=34, command=self._toggle_visible), "ghost")
+        if self.powered:
+            self.show_btn.pack(side="left", padx=6)
+            t.tag(ctk.CTkButton(bar, text="Back to corner", width=120, height=34, command=self.reset_home),
+                  "ghost").pack(side="left")
         self.dnd_var = ctk.BooleanVar(value=bool(self.settings["dnd"]))
         ctk.CTkSwitch(bar, text="Do Not Disturb", variable=self.dnd_var,
                       command=lambda: self.toggle_dnd() if self.dnd_var.get() != self.settings["dnd"] else None).pack(
@@ -3035,11 +4193,15 @@ class Plugin:
         tabs.grid(row=1, column=0, sticky="nsew")
         for name in ("Character", "Personality", "AI & Voice", "Permissions", "Memory"):
             tabs.add(name)
-        self._tab_character(tabs.tab("Character"))
-        self._tab_personality(tabs.tab("Personality"))
-        self._tab_ai(tabs.tab("AI & Voice"))
-        self._tab_permissions(tabs.tab("Permissions"))
-        self._tab_memory(tabs.tab("Memory"))
+        def scrolling(name: str) -> Any:  # tab content can be taller than the window
+            box = t.tag(ctk.CTkScrollableFrame(tabs.tab(name), fg_color="transparent"), "transparent")
+            box.pack(fill="both", expand=True)
+            return box
+        self._tab_character(scrolling("Character"))
+        self._tab_personality(scrolling("Personality"))
+        self._tab_ai(scrolling("AI & Voice"))
+        self._tab_permissions(scrolling("Permissions"))
+        self._tab_memory(tabs.tab("Memory"))  # has its own scrolling list
         self._tabs = tabs
         if current_tab:
             try:
@@ -3054,10 +4216,16 @@ class Plugin:
     def _refresh_status_bar(self) -> None:
         if not self._built:
             return
-        bits = [f"{self.character['name']} is " + ("on your desktop" if self.avatar.visible else "hidden")]
+        if not self.powered:
+            self.top_status.configure(text=f"{self.character['name']} is switched off — nothing is running and "
+                                           f"no memory is used. Switch her on whenever you want company.")
+            return
+        bits = [f"{self.character['name']} is " + ("on your desktop" if self.avatar.visible else "hidden (still on)")]
         active = []
-        if self.attachment:
-            active.append("screenshot attached")
+        if self.attachments:
+            active.append(f"{len(self.attachments)} image(s) attached")
+        if self.listener.state != "off":
+            active.append("voice chat on" + (" (you're muted)" if self.listener.muted else ""))
         if self.avatar.mode == "speaking":
             active.append("speaking")
         if self.settings["dnd"]:
@@ -3086,8 +4254,11 @@ class Plugin:
         holder.grid(row=row, column=1, sticky="ew", pady=6)
         widget_factory(holder)
         if hint:
-            t.tag(ctk.CTkLabel(holder, text=hint, anchor="w", justify="left", wraplength=560), "muted").pack(
-                fill="x", pady=(2, 0))
+            label_ = t.tag(ctk.CTkLabel(holder, text=hint, anchor="w", justify="left", wraplength=560), "muted")
+            if holder.grid_slaves():   # the row's widgets use grid — can't mix in pack
+                label_.grid(row=99, column=0, columnspan=3, sticky="ew", pady=(2, 0))
+            else:
+                label_.pack(fill="x", pady=(2, 0))
 
     def _tab_character(self, tab: Any) -> None:
         t = self.ctx.theme
@@ -3135,7 +4306,8 @@ class Plugin:
 
         def switches(holder: Any) -> None:
             for key, text in (("walk", "Stroll around a little"), ("reduced_motion", "Reduced motion"),
-                              ("greet", "Greet me when the app starts"), ("show_on_start", "Show on startup")):
+                              ("greet", "Greet me when she switches on"),
+                              ("power_on_start", "Switch on when Multi-Tool starts")):
                 var = ctk.BooleanVar(value=bool(self.settings[key]))
                 ctk.CTkSwitch(holder, text=text, variable=var,
                               command=lambda k=key, v=var: self.set_setting(k, v.get())).pack(anchor="w", pady=2)
@@ -3323,31 +4495,76 @@ class Plugin:
             row += 1
 
         def voice(holder: Any) -> None:
-            if not self.speech.available:
-                t.tag(ctk.CTkLabel(holder, text="Speech is only available on Windows.", anchor="w"), "muted").pack(
-                    anchor="w")
-                return
-            options = ["Character default"] + self.speech.voices
-            var = ctk.StringVar(value=self.settings.get("voice_name") or "Character default")
-            self._voice_menu = ctk.CTkOptionMenu(holder, values=options, variable=var, width=300,
-                                                 command=lambda v: self.set_setting(
-                                                     "voice_name", "" if v == "Character default" else v))
-            self._voice_menu.pack(anchor="w")
-            for key_, label in (("voice_rate", "Speed"), ("voice_pitch", "Pitch"), ("voice_volume", "Volume")):
-                line = t.tag(ctk.CTkFrame(holder, fg_color="transparent"), "transparent")
-                line.pack(anchor="w", pady=2)
-                t.tag(ctk.CTkLabel(line, text=label, width=60, anchor="w"), "muted").pack(side="left")
-                lo, hi = (-40, 40) if key_ == "voice_volume" else (-5, 5)
-                slider = ctk.CTkSlider(line, from_=lo, to=hi, number_of_steps=hi - lo, width=220,
+            config = self.voice_config()
+            engines = {"Neural (natural)": "neural", "Windows voices": "windows"}
+            choice = self.settings.get("voice_engine", "auto")
+            seg = ctk.CTkSegmentedButton(holder, values=list(engines),
+                                         command=lambda v: (self.set_setting("voice_engine", engines[v]),
+                                                            self._refresh_page(rebuild=True),
+                                                            self.chat.refresh_controls()))
+            seg.set("Windows voices" if choice == "windows" else "Neural (natural)")
+            seg.pack(anchor="w")
+            if choice != "windows" and not self.neural_ready():
+                note = ("Neural voices need a one-time download — until then a Windows voice is used."
+                        if sherpa_ok() else "Neural voices need the voice engine from a newer Multi-Tool build.")
+                t.tag(ctk.CTkLabel(holder, text=note, anchor="w"), "warning").pack(anchor="w", pady=(4, 0))
+            line = t.tag(ctk.CTkFrame(holder, fg_color="transparent"), "transparent")
+            line.pack(anchor="w", pady=(8, 2))
+            t.tag(ctk.CTkLabel(line, text="Voice", width=60, anchor="w"), "muted").pack(side="left")
+            names, selected, setter = self.voice_choices()
+            self._voice_menu = ctk.CTkOptionMenu(line, values=names or ["(none)"], width=280, dynamic_resizing=False,
+                                                 command=lambda v: (setter(v), self.chat.refresh_controls()))
+            self._voice_menu.set(selected or (names[0] if names else "(none)"))
+            self._voice_menu.pack(side="left", padx=8)
+            t.tag(ctk.CTkButton(line, text="▶  Try it", width=90, command=self.preview_voice), "secondary").pack(
+                side="left")
+
+            line = t.tag(ctk.CTkFrame(holder, fg_color="transparent"), "transparent")
+            line.pack(anchor="w", pady=2)
+            t.tag(ctk.CTkLabel(line, text="Speed", width=60, anchor="w"), "muted").pack(side="left")
+            lo, hi = SPEED_RANGE
+            value = t.tag(ctk.CTkLabel(line, text=f"{self.voice_speed():.2f}×", width=50), "text")
+            slider = ctk.CTkSlider(line, from_=lo, to=hi, number_of_steps=int(round((hi - lo) / 0.05)), width=280,
+                                   command=lambda v: (value.configure(text=f"{float(v):.2f}×"),
+                                                      self.set_setting("voice_speed", round(float(v), 2))))
+            slider.set(self.voice_speed())
+            slider.pack(side="left", padx=8)
+            value.pack(side="left")
+            t.tag(ctk.CTkButton(line, text="Reset", width=60,
+                                command=lambda: (self.set_setting("voice_speed", None),
+                                                 self._refresh_page(rebuild=True))), "ghost").pack(side="left", padx=6)
+            if config["engine"] == "windows":
+                for key_, label in (("voice_pitch", "Pitch"), ("voice_volume", "Volume")):
+                    line = t.tag(ctk.CTkFrame(holder, fg_color="transparent"), "transparent")
+                    line.pack(anchor="w", pady=2)
+                    t.tag(ctk.CTkLabel(line, text=label, width=60, anchor="w"), "muted").pack(side="left")
+                    lo_, hi_ = (-40, 40) if key_ == "voice_volume" else (-5, 5)
+                    sl = ctk.CTkSlider(line, from_=lo_, to=hi_, number_of_steps=hi_ - lo_, width=280,
                                        command=lambda v, k=key_: self.set_setting(k, int(v)))
-                slider.set(int(self.settings.get(key_) or 0))
-                slider.pack(side="left", padx=8)
-            t.tag(ctk.CTkButton(holder, text="Test voice", width=100,
-                                command=lambda: self.speak(random.choice(self.character["persona"]["greetings"]
-                                                                         or ["Testing, one two."]))),
-                  "secondary").pack(anchor="w", pady=(4, 0))
+                    sl.set(int(self.settings.get(key_) or 0))
+                    sl.pack(side="left", padx=8)
         self._row(tab, row, "Voice", voice,
-                  "Uses the voices built into Windows — offline too. Add more in Windows Settings ▸ Time & language ▸ Speech.")
+                  "Neural voices sound natural and run offline after a one-time download. Speed applies to both.")
+        row += 1
+
+        self._addon_widgets = {}
+        for key_ in ("voices", "listen"):
+            def addon(holder: Any, key_: str = key_) -> None:
+                holder.grid_columnconfigure(0, weight=1)
+                installed = self.addons.installed(key_)
+                label = t.tag(ctk.CTkLabel(holder, text=self.addon_text(key_), anchor="w", justify="left",
+                                           wraplength=520), "success" if installed else "text")
+                label.grid(row=0, column=0, sticky="ew")
+                button = t.tag(ctk.CTkButton(holder, text="", width=110), "ghost" if installed else "accent")
+                button.grid(row=0, column=1, sticky="e", padx=(8, 0))
+                bar = ctk.CTkProgressBar(holder, width=420)
+                bar.set(0)
+                self._addon_widgets[key_] = {"label": label, "button": button, "bar": bar}
+                self.update_addon_ui(key_)
+            self._row(tab, row, VOICE_ADDONS[key_]["name"], addon,
+                      "Talk out loud and Juno answers out loud. Turn it on with 🎙 in the chat." if key_ == "listen"
+                      else "")
+            row += 1
 
     def _refresh_voice_menu(self) -> None:
         menu = getattr(self, "_voice_menu", None)
@@ -3372,7 +4589,10 @@ class Plugin:
              "Only when you click Screenshot / Share a window. Images are sent with that one message and never saved."),
             ("memory", "Saved memory", "Lets the companion suggest facts to remember. Nothing is saved without your "
                                        "click; manage everything on the Memory tab."),
-            ("voice", "Speak replies aloud", "Uses Windows' built-in voices. Nothing leaves your PC for speech."),
+            ("voice", "Speak replies aloud", "Neural or Windows voices, both offline. Nothing leaves your PC for "
+                                             "speech."),
+            ("mic", "Microphone (voice chat)", "Only listens while 🎙 voice chat is on — never in the background. "
+                                               "Speech is recognised on your PC; audio is never saved or sent."),
             ("proactive", "Greetings & idle lines", "Short speech-bubble lines (never spoken). Do Not Disturb "
                                                     "silences them."),
         ]
@@ -3383,8 +4603,11 @@ class Plugin:
                 def changed() -> None:
                     self.set_setting(f"perm_{key}", var.get())
                     if key == "voice" and not var.get():
+                        self.voice_out.stop()
                         self.speech.stop()
                         self.avatar.stop_speaking()
+                    if key == "mic" and not var.get():
+                        self.listener.stop()
                     if key == "screen" and not var.get():
                         self.clear_attachment()
                     self.chat.refresh_controls()
@@ -3393,8 +4616,7 @@ class Plugin:
                     fill="x")
             self._row(tab, i, title, build)
         for j, (title, desc) in enumerate((
-                ("Microphone", "Not used yet — push-to-talk arrives with the local Whisper engine."),
-                ("Computer actions", "Not available. The companion is read-only by design: it can suggest, never act."))):
+                ("Computer actions", "Not available. The companion is read-only by design: it can suggest, never act."),)):
             def build(holder: Any, desc: str = desc) -> None:
                 sw = ctk.CTkSwitch(holder, text="Unavailable")
                 sw.configure(state="disabled")

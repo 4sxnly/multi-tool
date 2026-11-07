@@ -9,7 +9,7 @@
 #define AppName "Multi-Tool"
 #define AppExe "MultiTool.exe"
 #ifndef AppVersion
-  #define AppVersion "0.3.0"
+  #define AppVersion "0.4.0"
 #endif
 #define IconFile AddBackslash(SourcePath) + "..\assets\icon.ico"
 
@@ -47,9 +47,12 @@ Name: "core"; Description: "{#AppName} app + bundled engines (required)"; Types:
 Name: "tools"; Description: "Tools"; Types: full
 Name: "tools\media"; Description: "Media Downloader — YouTube, TikTok, X and more"; Types: full
 Name: "tools\companion"; Description: "Desktop Companion — a chat character with an offline AI"; Types: full
+Name: "tools\discord"; Description: "Discord Heads-Up — pop-ups for Discord messages with avatar and your notes"; Types: full
 Name: "tools\demo"; Description: "Drop Zone demo (for plugin developers)"
 Name: "extras"; Description: "Extras"; Types: full
-Name: "extras\overdrive"; Description: "Overdrive 2099 theme"; Types: full
+Name: "extras\overdrive"; Description: "Overdrive 2099 theme (animated, with sounds)"; Types: full
+Name: "extras\phosphor"; Description: "Phosphor CRT theme (green terminal)"; Types: full
+Name: "extras\amber"; Description: "Amber Lab 86 theme (orange retro)"; Types: full
 Name: "extras\vex"; Description: "Vex — extra companion character"; Types: full
 
 [Tasks]
@@ -57,16 +60,23 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 Source: "..\dist\MultiTool\*"; DestDir: "{app}"; Components: core; Flags: ignoreversion recursesubdirs createallsubdirs
+; the app itself as a plain file, so Settings > Updates can replace it without a new installer
+Source: "..\main.py"; DestDir: "{app}\core"; Components: core; Flags: ignoreversion
+Source: "..\build_info.json"; DestDir: "{app}"; Components: core; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\bin\*"; DestDir: "{app}\bin"; Components: core; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\plugins\media_downloader.py"; DestDir: "{app}\plugins"; Components: tools\media; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\plugins\desktop_companion.py"; DestDir: "{app}\plugins"; Components: tools\companion; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\plugins\discord_notifier.py"; DestDir: "{app}\plugins"; Components: tools\discord; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\plugins\dropzone_demo.py"; DestDir: "{app}\plugins"; Components: tools\demo; Flags: ignoreversion skipifsourcedoesntexist
 ; themes go straight into the user's themes folder so they show up in Settings ▸ Themes
 Source: "..\extras\themes\overdrive-2099.mttheme"; DestDir: "{userappdata}\MultiTool\themes"; Components: extras\overdrive; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\extras\themes\phosphor-crt.mttheme"; DestDir: "{userappdata}\MultiTool\themes"; Components: extras\phosphor; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\extras\themes\amber-lab-86.mttheme"; DestDir: "{userappdata}\MultiTool\themes"; Components: extras\amber; Flags: ignoreversion skipifsourcedoesntexist
 ; character packs are imported by the companion on its next start
 Source: "..\extras\characters\vex.mtchar"; DestDir: "{app}\extras\characters"; Components: extras\vex; Flags: ignoreversion skipifsourcedoesntexist
 
 [Dirs]
+Name: "{app}\core"
 Name: "{app}\plugins"
 Name: "{app}\bin"
 
@@ -75,11 +85,14 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
+; no skipifsilent: after an in-app update runs this installer silently, the app reopens by itself
+Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall
 
 [UninstallDelete]
 ; yt-dlp self-updates leave a backup next to the exe
 Type: files; Name: "{app}\bin\*.old"
 Type: filesandordirs; Name: "{app}\plugins\__pycache__"
+Type: filesandordirs; Name: "{app}\core"
+Type: files; Name: "{app}\plugins\*.mtupdate"
 ; offline AI models downloaded by the companion (several GB)
 Type: filesandordirs; Name: "{localappdata}\MultiTool\models"

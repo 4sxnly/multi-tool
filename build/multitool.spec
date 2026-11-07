@@ -20,6 +20,10 @@ BUNDLED_PACKAGES = [
     "tkinterdnd2",   # includes the native tkdnd library for drag-and-drop
     "PIL",           # Pillow: thumbnails, screenshots, textures
     "darkdetect",    # customtkinter dependency
+    "numpy",         # audio buffers (voice chat), image maths
+    "sounddevice",   # microphone / speaker access (bundles PortAudio)
+    "_sounddevice_data",
+    "sherpa_onnx",   # offline neural voices (Kokoro TTS) + speech recognition
 ]
 if sys.platform == "win32":
     BUNDLED_PACKAGES.append("win32com")
@@ -59,7 +63,11 @@ if sys.platform == "win32":
 
 datas, binaries = [], []
 for pkg in BUNDLED_PACKAGES:
-    d, b, h = collect_all(pkg)
+    try:
+        d, b, h = collect_all(pkg)
+    except Exception as exc:  # optional package missing from this build environment
+        print(f"WARNING: could not bundle {pkg}: {exc}")
+        continue
     datas += d
     binaries += b
     hiddenimports += h
@@ -68,8 +76,10 @@ icon = ROOT / "assets" / "icon.ico"
 if icon.is_file():
     datas.append((str(icon), "assets"))
 
+# The exe runs launcher.py, which loads core/main.py (updatable in place) and falls back to the copy of
+# main.py frozen in here. Importing main from the launcher makes PyInstaller bundle everything it uses.
 a = Analysis(  # noqa: F821
-    [str(ROOT / "main.py")],
+    [str(ROOT / "launcher.py")],
     pathex=[str(ROOT)],
     binaries=binaries,
     datas=datas,

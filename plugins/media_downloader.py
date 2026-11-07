@@ -977,6 +977,7 @@ class Plugin:
             else:
                 job.detail = "Already downloaded — nothing new to fetch."
             self.ctx.set_status(f"Downloaded: {job.title or job.url}", "success")
+            self._notify_done(job)
         elif job.files:
             job.state, job.progress = "partial", 1.0
             job.detail = f"{len(job.files)} saved, some items failed: {friendly_error(job)}"
@@ -988,6 +989,23 @@ class Plugin:
             self.ctx.log.warning("Job %d failed:\n%s", job.id, "\n".join(job.log[-25:]))
         self._refresh(job)
         self._schedule()
+
+    def _notify_done(self, job: Job) -> None:
+        """Heads-up pop-up when a download finishes while you're doing something else."""
+        notify = getattr(self.ctx, "notify", None)
+        if notify is None or not job.files:
+            return
+        try:
+            if self.ctx.app.focus_displayof() is not None:
+                return  # Multi-Tool is in front — the queue already shows it
+        except Exception:
+            pass
+        folder = Path(job.files[-1]).parent
+        count = len(job.files)
+        notify("Download finished", job.title or Path(job.files[-1]).name,
+               subtitle=f"{count} file{'s' if count != 1 else ''} · click to open the folder",
+               image=getattr(self._thumb_cache.get(job.id), "_light_image", None),
+               on_click=lambda: self.ctx.open_path(folder), icon="↓")
 
     def _refresh(self, job: Job) -> None:
         if job.row is not None:
